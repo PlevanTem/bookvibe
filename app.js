@@ -1,0 +1,1861 @@
+// BookVibe - 核心逻辑
+// 用一张卡片，连接文字与远方
+
+// ===================== API 配置 =====================
+// ⚠️ 重要：实际配置请在 config.js 中设置
+// 这里的配置仅作为默认值，会被 config.js 中的 window.BOOKVIBE_CONFIG 覆盖
+const CONFIG = {
+    // 1. LLM API配置 (用于生成 地点+原文Quote)
+    LLM_API_KEY: "", // 请在 config.js 中配置
+    LLM_MODEL: "GLM-4",
+    LLM_API_URL: "https://open.bigmodel.cn/api/paas/v4/chat/completions", // 智谱AI API 端点
+    
+    // 2. AIGC 生图API配置 (用于虚构地点生成图片，可选)
+    // 注意：如果不配置 AIGC_API_KEY，系统会自动使用免费的 Pollinations.ai 服务
+    AIGC_API_KEY: "", // 请在 config.js 中配置（可选，不配置则使用免费服务）
+    AIGC_API_URL: "https://api.openai.com/v1/images/generations",
+    AIGC_MODEL: "dall-e-3",
+    
+    // 3. 图片搜索API配置 (用于真实地点搜索图片)
+    IMAGE_API_TYPE: "picsum", // "picsum" (免费), "pexels", "unsplash"
+    PEXELS_API_URL: "https://api.pexels.com/v1/search",
+    PEXELS_API_KEY: "", // 请在 config.js 中配置（可选）
+    UNSPLASH_API_URL: "https://api.unsplash.com/search/photos",
+    UNSPLASH_API_KEY: "", // 请在 config.js 中配置（可选）
+    
+    // 其他配置
+    IMAGE_PER_PLACE: 1,
+    MIN_PLACES: 10,
+    MAX_PLACES: 30,
+};
+
+class BookVibe {
+    constructor() {
+        this.cardsData = []; // 所有卡片数据
+        this.currentIndex = 0; // 当前显示的卡片索引
+        this.isSwitching = false; // 是否正在切换
+        
+        // 合并用户配置（config.js 中的配置会覆盖默认值）
+        if (window.BOOKVIBE_CONFIG) {
+            Object.assign(CONFIG, window.BOOKVIBE_CONFIG);
+        }
+        
+        // 检查必要的 API 配置
+        this.checkAPIConfig();
+        
+        this.init();
+    }
+    
+    checkAPIConfig() {
+        const missingAPIs = [];
+        
+        if (!CONFIG.LLM_API_KEY) {
+            missingAPIs.push('LLM_API_KEY (用于提取地点和quote)');
+        }
+        
+        // AIGC API 是可选的（仅用于虚构地点）
+        // 图片搜索 API 有免费备选方案
+        
+        if (missingAPIs.length > 0) {
+            console.warn('⚠️ 缺少必要的 API 配置:', missingAPIs.join(', '));
+            console.warn('请在 config.js 或 app.js 中配置你的 API keys');
+        }
+    }
+    
+    init() {
+        // DOM 元素
+        this.inputScreen = document.getElementById('input-screen');
+        this.loadingScreen = document.getElementById('loading-screen');
+        this.resultScreen = document.getElementById('result-screen');
+        this.bookInput = document.getElementById('book-input');
+        this.submitBtn = document.getElementById('submit-btn');
+        this.errorMessage = document.getElementById('error-message');
+        this.backBtn = document.getElementById('back-btn');
+        
+        // 结果页元素
+        this.prevBtn = document.getElementById('prev-btn');
+        this.nextBtn = document.getElementById('next-btn');
+        this.mainCard = document.getElementById('main-card');
+        this.filmstrip = document.getElementById('filmstrip');
+        
+        // 事件监听
+        this.submitBtn.addEventListener('click', () => this.handleSubmit());
+        this.bookInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.handleSubmit();
+        });
+        
+        this.backBtn.addEventListener('click', () => this.reset());
+        this.prevBtn.addEventListener('click', () => this.prevCard());
+        this.nextBtn.addEventListener('click', () => this.nextCard());
+        
+        // 调试信息切换按钮
+        const toggleDebugBtn = document.getElementById('toggle-debug-btn');
+        if (toggleDebugBtn) {
+            toggleDebugBtn.addEventListener('click', () => this.toggleDebugInfo());
+        }
+        
+        // 键盘控制
+        document.addEventListener('keydown', (e) => {
+            if (this.resultScreen.classList.contains('hidden')) return;
+            
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                this.prevCard();
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                this.nextCard();
+            }
+        });
+        
+        // 聚焦输入框
+        this.bookInput.focus();
+    }
+    
+    async handleSubmit() {
+        const bookName = this.bookInput.value.trim();
+        
+        if (!bookName) {
+            this.showError('请输入书名');
+            return;
+        }
+        
+        // 显示加载界面
+        this.showLoading();
+        
+        try {
+            // 流式获取数据并显示
+            await this.fetchBookDataStreaming(bookName);
+            
+        } catch (error) {
+            console.error('Error:', error);
+            this.showError(error.message || '这本书太神秘，我们的旅行家迷路了。');
+            this.showInput();
+        }
+    }
+    
+    /**
+     * 流式获取数据并显示（改进版 - 并行加载图片）
+     */
+    async fetchBookDataStreaming(bookName) {
+        try {
+            // Step 1: 调用 GLM API 提取多个地点和金句
+            this.updateLoadingStatus('正在分析书籍内容...', 10);
+            const placesData = await this.callGLMAPI(bookName);
+            
+            if (!placesData || !Array.isArray(placesData) || placesData.length === 0) {
+                throw new Error('未提取到地点数据');
+            }
+            
+            // LLM 生成完成，立即切换到结果界面
+            this.loadingScreen.classList.add('hidden');
+            
+            // 立即创建所有地点的卡片数据（先不包含图片URL，后续会更新）
+            const cardsData = placesData.map((place, i) => ({
+                location: place.location,
+                locationEn: place.locationEn || place.location,
+                type: place.type || 'real',
+                quote: place.quote,
+                imageQuery: place.imageQuery || `${place.locationEn || place.location} atmospheric cinematic`,
+                imageUrl: '', // 图片URL稍后更新
+                bookTitle: bookName
+            }));
+            
+            // 立即显示结果界面，显示所有地点的内容（图片稍后加载）
+            this.showResult(cardsData, true); // 显示所有地点的内容，支持切换
+            
+            // 在 filmstrip 中为所有地点创建占位符
+            placesData.forEach((place, i) => {
+                this.addFilmstripPlaceholder(place, i);
+            });
+            
+            // Step 2: 并行处理所有地点的图片搜索/生成（加快速度）
+            const totalPlaces = placesData.length;
+            let completedCount = 0;
+            
+            // 并行处理所有地点的图片
+            const imagePromises = placesData.map(async (place, i) => {
+                const imageQuery = place.imageQuery || `${place.locationEn || place.location} atmospheric cinematic`;
+                const locationType = place.type || 'real';
+                let imageUrl;
+                
+                try {
+                    // 真实地点：搜索图片；虚构地点：使用AI生图（付费API或免费服务）
+                    if (locationType === 'fictional') {
+                        // 虚构地点优先使用AI生图（如果配置了付费API则使用付费，否则使用免费的Pollinations.ai）
+                        // 为免费 AI 生图添加延迟，避免触发速率限制（每个请求间隔 2-5 秒）
+                        if (!CONFIG.AIGC_API_KEY) {
+                            const delay = 2000 + Math.random() * 3000; // 2-5秒随机延迟
+                            await new Promise(resolve => setTimeout(resolve, delay * i)); // 递增延迟
+                        }
+                        imageUrl = await this.generateAIGCImage(imageQuery);
+                    } else {
+                        // 真实地点搜索图片（可以并行，无速率限制问题）
+                        imageUrl = await this.searchImage(imageQuery);
+                    }
+                } catch (error) {
+                    console.warn(`⚠️ 地点 ${place.location} 图片加载失败:`, error);
+                    imageUrl = this.getFallbackImage(imageQuery);
+                }
+                
+                // 更新卡片数据的图片URL（卡片数据已在之前创建）
+                const cardData = cardsData[i];
+                cardData.imageUrl = imageUrl;
+                
+                // 更新 filmstrip 项（从占位符更新为实际图片）
+                this.updateFilmstripItem(cardData, i);
+                
+                // 更新进度
+                completedCount++;
+                
+                // 如果当前显示的是这个卡片，立即更新主卡片图片
+                if (this.currentIndex === i) {
+                    this.updateMainCard();
+                }
+                
+                return cardData;
+            });
+            
+            // 等待所有图片加载完成（使用 allSettled 确保即使部分失败也能继续）
+            await Promise.allSettled(imagePromises);
+            
+            // 过滤掉 undefined（理论上不应该有，但为了安全）
+            const finalCardsData = cardsData.filter(card => card !== undefined);
+            
+            // 更新所有数据（确保数据完整）
+            this.cardsData = finalCardsData;
+            if (this.currentIndex >= finalCardsData.length) {
+                this.currentIndex = 0;
+            }
+            this.updateMainCard();
+            this.updateFilmstripActive();
+            this.updateCounter();
+            
+            this.currentData = finalCardsData;
+            return finalCardsData;
+            
+        } catch (error) {
+            throw error;
+        }
+    }
+    
+    /**
+     * 原有的 fetchBookData 方法（保留用于降级方案）
+     */
+    async fetchBookData(bookName) {
+        // 优先尝试直接调用 LLM API（前端直连）
+        try {
+            // Step 1: 调用 GLM API 提取多个地点和金句
+            const placesData = await this.callGLMAPI(bookName);
+            
+            if (!placesData || !Array.isArray(placesData) || placesData.length === 0) {
+                throw new Error('未提取到地点数据');
+            }
+            
+            // Step 2: 为每个地点搜索图片（并行加载）
+            const cardsData = await Promise.all(
+                placesData.map(async (place) => {
+                    const imageQuery = place.imageQuery || `${place.locationEn || place.location} atmospheric cinematic`;
+                    const locationType = place.type || 'real'; // 默认为真实地点
+                    let imageUrl;
+                    
+                    try {
+                        // 真实地点：搜索图片；虚构地点：使用AI生图（付费API或免费服务）
+                        if (locationType === 'fictional') {
+                            // 虚构地点优先使用AI生图（如果配置了付费API则使用付费，否则使用免费的Pollinations.ai）
+                            console.log(`🎨 使用AI生图 - 地点: ${place.location}, 关键词: ${imageQuery}`);
+                            imageUrl = await this.generateAIGCImage(imageQuery);
+                        } else {
+                            // 真实地点搜索图片
+                            console.log(`🔍 搜索图片 - 地点: ${place.location}, 关键词: ${imageQuery}, API类型: ${CONFIG.IMAGE_API_TYPE || 'picsum'}`);
+                            imageUrl = await this.searchImage(imageQuery);
+                            console.log(`✅ 图片搜索成功 - 地点: ${place.location}, URL: ${imageUrl}`);
+                        }
+                    } catch (error) {
+                        // 如果图片加载失败，使用备用图片
+                        console.warn(`⚠️ 地点 ${place.location} 图片加载失败:`, error);
+                        console.warn(`   使用备用图片，关键词: ${imageQuery}`);
+                        imageUrl = this.getFallbackImage(imageQuery);
+                    }
+                    
+                    return {
+                        location: place.location,
+                        locationEn: place.locationEn || place.location,
+                        type: locationType,
+                        quote: place.quote,
+                        imageQuery: imageQuery,
+                        imageUrl: imageUrl,
+                        bookTitle: bookName
+                    };
+                })
+            );
+            
+            return cardsData;
+            
+        } catch (error) {
+            console.error('LLM API 调用失败:', error);
+            console.error('错误详情:', {
+                message: error.message,
+                stack: error.stack,
+                config: {
+                    apiUrl: CONFIG.LLM_API_URL,
+                    hasApiKey: !!CONFIG.LLM_API_KEY,
+                    model: CONFIG.LLM_MODEL
+                }
+            });
+            
+            // 降级方案1: 尝试后端 API
+            const config = window.BOOKVIBE_CONFIG || {};
+            const API_ENDPOINT = config.API_URL || '/api/generate';
+            
+            if (API_ENDPOINT !== '/api/generate') {
+                try {
+                    const response = await fetch(API_ENDPOINT, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ bookName })
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        // 如果后端返回的是单个对象，转换为数组
+                        return Array.isArray(data) ? data : [data];
+                    }
+                } catch (e) {
+                    console.warn('后端 API 也失败:', e);
+                }
+            }
+            
+            // 降级方案2: 使用模拟数据（并行加载）
+            console.warn('使用模拟数据作为降级方案');
+            this.updateLoadingStatus('使用示例数据...', 20);
+            const mockData = this.getMockData(bookName);
+            
+            // 立即显示结果界面，并在 filmstrip 中创建所有占位符
+            this.showResult([], true);
+            
+            // 在 filmstrip 中为所有地点创建占位符
+            mockData.forEach((place, i) => {
+                this.addFilmstripPlaceholder(place, i);
+            });
+            
+            // 并行处理所有地点的图片
+            const cardsData = new Array(mockData.length);
+            let completedCount = 0;
+            
+            const imagePromises = mockData.map(async (place, i) => {
+                if (!place.imageUrl) {
+                    const imageQuery = place.imageQuery || `${place.locationEn || place.location} atmospheric cinematic`;
+                    place.imageUrl = this.getFallbackImage(imageQuery);
+                }
+                
+                const cardData = {
+                    ...place,
+                    bookTitle: bookName
+                };
+                
+                cardsData[i] = cardData;
+                
+                // 更新 filmstrip 项
+                this.updateFilmstripItem(cardData, i);
+                
+                completedCount++;
+                const progress = 20 + Math.floor((completedCount / mockData.length) * 70);
+                this.updateLoadingStatus(`正在准备图片... (${completedCount}/${mockData.length})`, progress);
+                
+                // 如果有数据，立即显示第一个卡片
+                if (completedCount === 1 && cardsData[0]) {
+                    this.cardsData = [cardsData[0]];
+                    this.currentIndex = 0;
+                    this.updateMainCard();
+                    this.updateFilmstripActive();
+                    this.updateCounter();
+                }
+                
+                return cardData;
+            });
+            
+            await Promise.allSettled(imagePromises);
+            
+            const finalCardsData = cardsData.filter(card => card !== undefined);
+            
+            // 更新所有数据
+            this.cardsData = finalCardsData;
+            if (this.currentIndex >= finalCardsData.length) {
+                this.currentIndex = 0;
+            }
+            this.updateMainCard();
+            this.updateFilmstripActive();
+            this.updateCounter();
+            
+            this.updateLoadingStatus('完成！', 100);
+            setTimeout(() => {
+                this.loadingScreen.classList.add('hidden');
+            }, 500);
+            
+            this.currentData = finalCardsData;
+            return finalCardsData;
+        }
+    }
+    
+    /**
+     * 修复JSON字符串中的常见问题
+     */
+    fixJSONString(jsonStr) {
+        if (!jsonStr || typeof jsonStr !== 'string') {
+            return jsonStr;
+        }
+        
+        // 1. 移除单行注释（// 开头的行，但不在字符串内）
+        jsonStr = jsonStr.replace(/\/\/.*$/gm, '');
+        
+        // 2. 移除多行注释（/* ... */）
+        jsonStr = jsonStr.replace(/\/\*[\s\S]*?\*\//g, '');
+        
+        // 3. 修复尾随逗号（在对象和数组的最后一项后）
+        jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
+        
+        // 4. 修复字符串中的换行符（转义未转义的换行符）
+        // 先标记所有转义的字符
+        jsonStr = jsonStr.replace(/\\(.)/g, (match, char) => {
+            return `\u0002${char.charCodeAt(0)}\u0002`;
+        });
+        
+        // 修复字符串中的未转义换行符
+        let inString = false;
+        let result = '';
+        for (let i = 0; i < jsonStr.length; i++) {
+            const char = jsonStr[i];
+            const prevChar = i > 0 ? jsonStr[i - 1] : '';
+            
+            if (char === '"' && prevChar !== '\\') {
+                inString = !inString;
+            }
+            
+            // 如果遇到未转义的换行符且在字符串内，转义它
+            if (char === '\n' && inString && prevChar !== '\\') {
+                result += '\\n';
+            } else {
+                result += char;
+            }
+        }
+        jsonStr = result;
+        
+        // 恢复转义的字符
+        jsonStr = jsonStr.replace(/\u0002(\d+)\u0002/g, (match, code) => {
+            return '\\' + String.fromCharCode(parseInt(code));
+        });
+        
+        // 5. 修复属性名未加引号的情况（更安全的处理）
+        // 匹配: { key: 或 , key: 但不在字符串内
+        jsonStr = jsonStr.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, (match, prefix, key) => {
+            // 检查是否在字符串内（简单检查）
+            const beforeMatch = jsonStr.substring(0, jsonStr.indexOf(match));
+            const openQuotes = (beforeMatch.match(/"/g) || []).length;
+            if (openQuotes % 2 === 0) {
+                // 不在字符串内，添加引号
+                return `${prefix}"${key}":`;
+            }
+            return match;
+        });
+        
+        // 6. 修复单引号字符串为双引号（更安全的处理）
+        // 只替换看起来像字符串的单引号（在冒号后或逗号后）
+        jsonStr = jsonStr.replace(/([{,]\s*"[^"]*"\s*:\s*)'([^']*)'/g, '$1"$2"');
+        
+        // 7. 修复控制字符和特殊字符（保留转义字符）
+        jsonStr = jsonStr.replace(/[\x00-\x1F\x7F]/g, ''); // 移除控制字符，但保留已转义的
+        
+        // 8. 修复多个连续的逗号
+        jsonStr = jsonStr.replace(/,+/g, ',');
+        
+        // 9. 修复对象/数组之间的多余逗号
+        jsonStr = jsonStr.replace(/,\s*}/g, '}');
+        jsonStr = jsonStr.replace(/,\s*]/g, ']');
+        
+        // 10. 移除多余的空白字符
+        jsonStr = jsonStr.trim();
+        
+        return jsonStr;
+    }
+    
+    /**
+     * 调用 LLM API 提取多个地点和金句
+     */
+    async callGLMAPI(bookName) {
+        if (!CONFIG.LLM_API_KEY) {
+            throw new Error('LLM_API_KEY 未配置，请在 config.js 中配置你的 API key');
+        }
+        
+        const prompt = `你是一位文学评论家和旅行家。请为作品《${bookName}》，完成以下要求，严格按照JSON格式返回，不要任何多余文字：
+
+1. 识别作品中**最经典/代表性/最具氛围感**的${CONFIG.MIN_PLACES}-${CONFIG.MAX_PLACES}个POI（可以是真实地点或虚构地点）
+2. 为每个地点判断是"真实地点"还是"虚构地点"，真实地点是指现实中存在的地理位置，虚构地点是指作品中创造的地点
+3. 为每个地点从作品（书籍-原文/电影-台词）中quote一段描写该地点或体现该地点情绪的**原文段落**（中文书籍用中文，英文书籍用英文，80-150字）
+4. 为每个地点生成用于搜索最符合该POI特色的图片搜索关键词（不超过5个词，如果是虚拟地点，则生成生图提示词），如果是外国作品，则用英文搜索词，如果是中国作品，则用中文搜索词
+5. 要求地点不能重复、细节深入一点、不要出现太大颗粒度（现市、国家）信息、越多越好
+
+请以 JSON 数组格式返回：
+[
+    {
+        "location": "地点1中文名",
+        "locationEn": "地点1英文名",
+        "type": "real" 或 "fictional",
+        "quote": "原文段落（80-150字）",
+        "imageQuery": "搜索关键词1或生图提示词1"
+    },
+    ...
+]
+
+如果书籍不存在或无法识别，返回空数组 []`;
+
+        // 智谱AI的Authorization格式可能不同，尝试两种格式
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+        
+        // 智谱AI可能使用不同的认证方式
+        if (CONFIG.LLM_API_URL.includes('bigmodel.cn')) {
+            // 智谱AI使用 API Key 作为 Bearer token
+            headers['Authorization'] = `Bearer ${CONFIG.LLM_API_KEY}`;
+        } else {
+            // OpenAI格式
+            headers['Authorization'] = `Bearer ${CONFIG.LLM_API_KEY}`;
+        }
+        
+        console.log('调用 LLM API:', {
+            url: CONFIG.LLM_API_URL,
+            model: CONFIG.LLM_MODEL,
+            hasKey: !!CONFIG.LLM_API_KEY
+        });
+        
+        const response = await fetch(CONFIG.LLM_API_URL, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                model: CONFIG.LLM_MODEL,
+                messages: [
+                    {
+                        role: 'system',
+                        content: '你是一位专业的文学评论家和旅行家，擅长从文学作品中提取地点和经典句子。请严格按照JSON格式返回，不要任何多余文字。'
+                    },
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                temperature: 0.7,
+                max_tokens: 2000  // 增加 token 限制，确保能返回完整的地点数组
+            })
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error?.message || `LLM API 请求失败: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        // 检查响应格式（智谱AI可能返回不同的格式）
+        let content;
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+            content = data.choices[0].message.content.trim();
+        } else if (data.data && data.data.choices && data.data.choices[0]) {
+            content = data.data.choices[0].message.content.trim();
+        } else if (typeof data === 'string') {
+            content = data.trim();
+        } else {
+            console.error('API 响应格式异常:', data);
+            throw new Error('API 返回格式不正确，请检查 API 配置');
+        }
+        
+        // 尝试解析 JSON（可能包含 markdown 代码块）
+        let jsonStr = content;
+        if (content.includes('```json')) {
+            const match = content.match(/```json\n([\s\S]*?)\n```/);
+            if (match) jsonStr = match[1];
+        } else if (content.includes('```')) {
+            const match = content.match(/```\n([\s\S]*?)\n```/);
+            if (match) jsonStr = match[1];
+        }
+        
+        // 清理可能的引号包裹
+        jsonStr = jsonStr.trim();
+        if (jsonStr.startsWith('"') && jsonStr.endsWith('"')) {
+            jsonStr = JSON.parse(jsonStr);
+        }
+        
+        // 修复常见的JSON格式问题
+        jsonStr = this.fixJSONString(jsonStr);
+        
+        try {
+            const result = JSON.parse(jsonStr);
+            
+            // 确保返回数组格式
+            if (!Array.isArray(result)) {
+                // 如果是单个对象，转换为数组
+                return [result];
+            }
+            
+            return result;
+        } catch (error) {
+            console.error('JSON 解析失败:', error);
+            console.error('原始内容长度:', content.length);
+            console.error('原始内容前500字符:', content.substring(0, 500));
+            console.error('处理后的 JSON 长度:', jsonStr.length);
+            console.error('处理后的 JSON 前500字符:', jsonStr.substring(0, 500));
+            
+            // 尝试定位错误位置
+            const errorMatch = error.message.match(/position (\d+)/);
+            if (errorMatch) {
+                const errorPos = parseInt(errorMatch[1]);
+                const startPos = Math.max(0, errorPos - 50);
+                const endPos = Math.min(jsonStr.length, errorPos + 50);
+                console.error('错误位置附近的代码:');
+                console.error(jsonStr.substring(startPos, endPos));
+                console.error(' '.repeat(Math.min(50, errorPos - startPos)) + '^');
+            }
+            
+            // 尝试提取JSON数组部分
+            const arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
+            if (arrayMatch) {
+                try {
+                    console.log('尝试提取并修复JSON数组...');
+                    const fixedJson = this.fixJSONString(arrayMatch[0]);
+                    const result = JSON.parse(fixedJson);
+                    if (Array.isArray(result) && result.length > 0) {
+                        console.warn('✅ 使用修复后的JSON');
+                        return result;
+                    }
+                } catch (e) {
+                    console.error('修复JSON也失败:', e);
+                    console.error('修复后的JSON片段:', arrayMatch[0].substring(0, 200));
+                }
+            }
+            
+            // 尝试提取所有可能的JSON对象并组合成数组
+            const objectMatches = jsonStr.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
+            if (objectMatches && objectMatches.length > 0) {
+                console.log(`找到 ${objectMatches.length} 个可能的JSON对象，尝试解析...`);
+                const validObjects = [];
+                for (const objStr of objectMatches) {
+                    try {
+                        const fixedJson = this.fixJSONString(objStr);
+                        const parsed = JSON.parse(fixedJson);
+                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                            // 检查必需字段
+                            if (parsed.location || parsed.quote) {
+                                validObjects.push(parsed);
+                            }
+                        }
+                    } catch (e) {
+                        // 忽略单个对象解析失败
+                    }
+                }
+                if (validObjects.length > 0) {
+                    console.warn(`✅ 成功提取 ${validObjects.length} 个有效的JSON对象`);
+                    return validObjects;
+                }
+            }
+            
+            // 最后尝试：提取第一个完整的JSON对象
+            const objectMatch = jsonStr.match(/\{[\s\S]*?\}/);
+            if (objectMatch) {
+                try {
+                    console.log('尝试提取第一个JSON对象...');
+                    const fixedJson = this.fixJSONString(objectMatch[0]);
+                    const result = JSON.parse(fixedJson);
+                    if (result && typeof result === 'object') {
+                        console.warn('✅ 使用提取的单个JSON对象');
+                        return [result];
+                    }
+                } catch (e) {
+                    console.error('提取对象也失败:', e);
+                }
+            }
+            
+            throw new Error(`JSON解析失败: ${error.message}。请检查API返回的格式是否正确。原始内容已输出到控制台。`);
+        }
+    }
+    
+    /**
+     * 搜索图片（支持多种图片源）
+     */
+    async searchImage(query) {
+        const apiType = (CONFIG.IMAGE_API_TYPE || 'picsum').toLowerCase();
+        
+        console.log(`🔎 开始搜索图片 - 关键词: "${query}", API类型: ${apiType}`);
+        
+        // 按优先级尝试不同的图片源（统一转换为小写进行比较）
+        if (apiType === 'picsum') {
+            const url = this.getFallbackImage(query);
+            console.log(`📷 Picsum图片URL: ${url}`);
+            return url;
+        } else if (apiType === 'pexels' && CONFIG.PEXELS_API_KEY) {
+            try {
+                const url = await this.searchPexelsImage(query);
+                console.log(`📷 Pexels图片URL: ${url}`);
+                return url;
+            } catch (error) {
+                console.warn('⚠️ Pexels API 失败，使用备用图片:', error);
+                const fallbackUrl = this.getFallbackImage(query);
+                console.log(`📷 备用图片URL: ${fallbackUrl}`);
+                return fallbackUrl;
+            }
+        } else if (apiType === 'unsplash') {
+            try {
+                const url = await this.searchUnsplashImage(query);
+                console.log(`📷 Unsplash图片URL: ${url}`);
+                return url;
+            } catch (error) {
+                console.warn('⚠️ Unsplash API 失败，使用备用图片:', error);
+                const fallbackUrl = this.getFallbackImage(query);
+                console.log(`📷 备用图片URL: ${fallbackUrl}`);
+                return fallbackUrl;
+            }
+        } else {
+            // 默认使用 Picsum
+            return this.getFallbackImage(query);
+        }
+    }
+    
+    /**
+     * 调用 Pexels API 搜索图片（需要 API key）
+     */
+    async searchPexelsImage(query) {
+        if (!CONFIG.PEXELS_API_KEY) {
+            throw new Error('Pexels API key 未配置');
+        }
+        
+        const encodedQuery = encodeURIComponent(query);
+        const url = `https://api.pexels.com/v1/search?query=${encodedQuery}&per_page=${CONFIG.IMAGE_PER_PLACE}&orientation=portrait`;
+        
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': CONFIG.PEXELS_API_KEY
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Pexels API error: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        // 图片兜底：无结果时使用备用图片
+        if (!data.photos || data.photos.length === 0) {
+            throw new Error('Pexels 未找到相关图片');
+        }
+        
+        // 返回中等尺寸图片（适合卡片显示）
+        return data.photos[0].src.large || data.photos[0].src.medium;
+    }
+    
+    /**
+     * 调用 Unsplash API 搜索图片（备用方案）
+     */
+    async searchUnsplashImage(query) {
+        if (!CONFIG.UNSPLASH_API_KEY) {
+            throw new Error('Unsplash API key 未配置');
+        }
+        
+        const encodedQuery = encodeURIComponent(query);
+        const url = `${CONFIG.UNSPLASH_API_URL}?query=${encodedQuery}&per_page=${CONFIG.IMAGE_PER_PLACE}&client_id=${CONFIG.UNSPLASH_API_KEY}`;
+        
+        try {
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                throw new Error(`Unsplash API error: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            
+            // 图片兜底：无结果时返回备用图片
+            if (!data.results || data.results.length === 0) {
+                return this.getFallbackImage(query);
+            }
+            
+            return data.results[0].urls.regular; // Unsplash 高清图地址
+            
+        } catch (error) {
+            console.warn('Unsplash API 失败，使用备用图片:', error);
+            return this.getFallbackImage(query);
+        }
+    }
+    
+    /**
+     * 获取图片（使用 Picsum Photos，无需 API key，稳定可靠）
+     */
+    getFallbackImage(query) {
+        // 使用 Picsum Photos（无需 API key，稳定可靠）
+        // 使用 query 作为 seed，确保相同查询返回相同图片
+        const seed = this.hashString(query);
+        return `https://picsum.photos/seed/${seed}/600/400`;
+    }
+    
+    /**
+     * 简单的字符串哈希函数（用于生成稳定的 seed）
+     */
+    hashString(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
+        }
+        return Math.abs(hash);
+    }
+    
+    // 模拟数据（用于演示，返回数组格式，包含类型字段）
+    getMockData(bookName) {
+        const mockData = {
+            '挪威的森林': [
+                {
+                    location: '挪威森林',
+                    locationEn: 'Norwegian Forest',
+                    type: 'real',
+                    quote: '每个人都有属于自己的一片森林，也许我们从来不曾去过，但它一直在那里，总会在那里。迷失的人迷失了，相逢的人会再相逢。',
+                    imageQuery: 'Norwegian forest mist atmospheric cinematic',
+                    bookTitle: '挪威的森林'
+                },
+                {
+                    location: '阿美寮',
+                    locationEn: 'Ami Lodge',
+                    type: 'fictional',
+                    quote: '死并非生的对立面，而作为生的一部分永存。',
+                    imageQuery: 'Japanese mountain lodge peaceful atmospheric',
+                    bookTitle: '挪威的森林'
+                },
+                {
+                    location: '东京',
+                    locationEn: 'Tokyo',
+                    type: 'real',
+                    quote: '哪里会有人喜欢孤独，不过是不喜欢失望。',
+                    imageQuery: 'Tokyo cityscape urban atmospheric',
+                    bookTitle: '挪威的森林'
+                }
+            ],
+            '了不起的盖茨比': [
+                {
+                    location: '长岛西卵',
+                    locationEn: 'West Egg, Long Island',
+                    type: 'real',
+                    quote: 'He stretched out his arms toward the dark water in a curious way, and far as I was from him I could have sworn he was trembling.',
+                    imageQuery: 'Long Island dock mist night atmospheric',
+                    bookTitle: '了不起的盖茨比'
+                },
+                {
+                    location: '东卵',
+                    locationEn: 'East Egg',
+                    type: 'real',
+                    quote: 'So we beat on, boats against the current, borne back ceaselessly into the past.',
+                    imageQuery: 'Long Island mansion Gatsby atmospheric',
+                    bookTitle: '了不起的盖茨比'
+                },
+                {
+                    location: '灰烬谷',
+                    locationEn: 'Valley of Ashes',
+                    type: 'fictional',
+                    quote: 'The eyes of Doctor T. J. Eckleburg are blue and gigantic—their retinas are one yard high.',
+                    imageQuery: 'industrial wasteland desolate atmospheric',
+                    bookTitle: '了不起的盖茨比'
+                }
+            ],
+            '百年孤独': [
+                {
+                    location: '马孔多',
+                    locationEn: 'Macondo',
+                    type: 'fictional',
+                    quote: '多年以后，面对行刑队，奥雷里亚诺·布恩迪亚上校将会回想起父亲带他去见识冰块的那个遥远的下午。',
+                    imageQuery: 'Colombian jungle magical realism atmospheric',
+                    bookTitle: '百年孤独'
+                },
+                {
+                    location: '香蕉种植园',
+                    locationEn: 'Banana Plantation',
+                    type: 'real',
+                    quote: '世界新生伊始，许多事物还没有名字，提到的时候尚需用手指指点点。',
+                    imageQuery: 'tropical plantation Colombia atmospheric',
+                    bookTitle: '百年孤独'
+                }
+            ]
+        };
+        
+        // 检查是否有匹配的模拟数据
+        for (const [key, value] of Object.entries(mockData)) {
+            if (bookName.includes(key)) {
+                return value;
+            }
+        }
+        
+        // 默认数据（返回数组）
+        return [{
+            location: '未知之地',
+            locationEn: 'Unknown Place',
+            type: 'real',
+            quote: '每一本书都是一次旅行，每一页都是一个新的世界。',
+            imageQuery: 'literature books reading atmospheric',
+            bookTitle: bookName
+        }];
+    }
+    
+    async loadImage(query) {
+        // 使用新的 searchImage 方法（支持 Pexels 和 Unsplash）
+        const imageUrl = await this.searchImage(query);
+        
+        // 验证图片是否可加载
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            
+            img.onload = () => {
+                resolve(img.src);
+            };
+            
+            img.onerror = () => {
+                // 如果图片加载失败，使用备用图片
+                console.warn('图片加载失败，使用备用图片');
+                const fallbackUrl = this.getFallbackImage(query || 'literature atmospheric');
+                resolve(fallbackUrl);
+            };
+            
+            img.src = imageUrl;
+        });
+    }
+    
+    showLoading() {
+        this.inputScreen.classList.add('hidden');
+        this.resultScreen.classList.add('hidden');
+        this.loadingScreen.classList.remove('hidden');
+        this.errorMessage.classList.add('hidden');
+        
+        // 清空 filmstrip，避免显示上一轮的数据
+        if (this.filmstrip) {
+            this.filmstrip.innerHTML = '';
+        }
+        
+        // 重置进度
+        this.updateLoadingStatus('正在开始...', 0);
+    }
+    
+    /**
+     * 更新加载状态
+     */
+    updateLoadingStatus(statusText, progress) {
+        // 更新状态文本（如果有状态显示区域）
+        const statusElement = document.querySelector('.loading-text:last-child');
+        if (statusElement && statusText) {
+            statusElement.textContent = statusText;
+        }
+    }
+    
+    showResult(cardsData, isStreaming = false) {
+        // 如果是流式模式且结果界面已显示，不重复隐藏加载界面
+        if (!isStreaming) {
+            this.loadingScreen.classList.add('hidden');
+        }
+        this.resultScreen.classList.remove('hidden');
+        
+        // 确保 cardsData 是数组
+        if (!Array.isArray(cardsData)) {
+            cardsData = [cardsData];
+        }
+        
+        // 清空 filmstrip，避免显示上一轮的数据
+        if (this.filmstrip) {
+            this.filmstrip.innerHTML = '';
+        }
+        
+        // 保存数据
+        this.cardsData = cardsData;
+        this.currentIndex = 0;
+        
+        // 只有在有数据时才显示主卡片和创建胶卷带
+        // 如果 cardsData 为空（流式模式初始状态），filmstrip 占位符已经在 fetchBookDataStreaming 中创建
+        if (cardsData.length > 0) {
+            // 显示主卡片
+            this.updateMainCard();
+            
+            // 创建胶卷带（如果还没有创建）
+            if (!this.filmstrip.querySelector('.filmstrip-item')) {
+                this.createFilmstrip();
+            }
+            
+            // 更新导航按钮显示状态
+            this.updateNavigationButtons();
+            
+            // 更新计数器
+            this.updateCounter();
+        } else {
+            // 空数据时，只更新计数器（显示占位符数量）
+            this.updateCounter();
+        }
+    }
+    
+    /**
+     * 添加新卡片到结果（流式模式）
+     */
+    addCardToResult(cardData) {
+        // 检查是否已存在相同地点（防止重复）
+        const existingIndex = this.cardsData.findIndex(card => 
+            card.location === cardData.location && card.locationEn === cardData.locationEn
+        );
+        
+        if (existingIndex !== -1) {
+            console.warn(`⚠️ 地点 "${cardData.location}" 已存在，跳过重复添加`);
+            return;
+        }
+        
+        // 更新数据
+        this.cardsData.push(cardData);
+        
+        // 只添加新卡片到胶卷带，而不是重新创建整个胶卷带
+        this.addFilmstripItem(cardData, this.cardsData.length - 1);
+        
+        // 更新计数器
+        this.updateCounter();
+        
+        // 如果当前是最后一张，自动切换到新卡片
+        if (this.currentIndex === this.cardsData.length - 2) {
+            setTimeout(() => {
+                this.currentIndex = this.cardsData.length - 1;
+                this.updateMainCard();
+                this.updateFilmstripActive();
+                this.updateCounter(); // 更新计数器
+            }, 300);
+        }
+    }
+    
+    /**
+     * 添加胶卷带占位符（在图片加载前显示）
+     */
+    addFilmstripPlaceholder(place, index) {
+        if (!this.filmstrip) return;
+        
+        // 检查是否已存在
+        const existingItem = this.filmstrip.querySelector(`[data-index="${index}"]`);
+        if (existingItem) return;
+        
+        const itemIndex = parseInt(index, 10);
+        if (isNaN(itemIndex) || itemIndex < 0) {
+            console.error(`无效的索引: ${index}`);
+            return;
+        }
+        
+        const item = document.createElement('div');
+        item.className = `filmstrip-item loading-placeholder ${itemIndex === this.currentIndex ? 'active' : ''}`;
+        item.dataset.index = itemIndex.toString();
+        
+        // 创建加载占位符
+        const placeholder = document.createElement('div');
+        placeholder.className = 'filmstrip-placeholder-content';
+        placeholder.innerHTML = `
+            <div class="filmstrip-loading-spinner"></div>
+            <div class="filmstrip-placeholder-text">${place.location}</div>
+        `;
+        
+        item.appendChild(placeholder);
+        item.addEventListener('click', () => this.goToCard(itemIndex));
+        
+        // 添加淡入动画
+        item.style.opacity = '0';
+        item.style.transform = 'translateY(10px)';
+        
+        this.filmstrip.appendChild(item);
+        
+        // 触发动画
+        setTimeout(() => {
+            item.style.transition = 'all 0.3s ease';
+            item.style.opacity = '1';
+            item.style.transform = 'translateY(0)';
+        }, 10);
+    }
+    
+    /**
+     * 更新胶卷带项（从占位符更新为实际图片）
+     */
+    updateFilmstripItem(cardData, index) {
+        if (!this.filmstrip) return;
+        
+        const itemIndex = parseInt(index, 10);
+        if (isNaN(itemIndex) || itemIndex < 0) {
+            console.error(`无效的索引: ${index}`);
+            return;
+        }
+        
+        let item = this.filmstrip.querySelector(`[data-index="${itemIndex}"]`);
+        
+        // 如果不存在，创建新项
+        if (!item) {
+            this.addFilmstripItem(cardData, itemIndex);
+            return;
+        }
+        
+        // 如果存在但还是占位符，更新为实际图片
+        if (item.classList.contains('loading-placeholder')) {
+            // 移除占位符内容
+            item.innerHTML = '';
+            item.classList.remove('loading-placeholder');
+            
+            // 创建图片
+            const img = document.createElement('img');
+            img.alt = cardData.location;
+            img.loading = 'lazy';
+            img.crossOrigin = 'anonymous';
+            
+            // 预加载图片
+            const preloadImg = new Image();
+            preloadImg.crossOrigin = 'anonymous';
+            preloadImg.onload = () => {
+                img.src = cardData.imageUrl;
+            };
+            preloadImg.onerror = () => {
+                img.src = cardData.imageUrl;
+            };
+            preloadImg.src = cardData.imageUrl;
+            
+            item.appendChild(img);
+            
+            // 更新激活状态
+            if (itemIndex === this.currentIndex) {
+                item.classList.add('active');
+            }
+        } else {
+            // 如果已经是图片项，只更新图片
+            const img = item.querySelector('img');
+            if (img && cardData.imageUrl) {
+                img.src = cardData.imageUrl;
+            }
+        }
+    }
+    
+    /**
+     * 添加单个胶卷带项（流式模式使用）
+     */
+    addFilmstripItem(cardData, index) {
+        // 确保索引是数字类型
+        const itemIndex = parseInt(index, 10);
+        if (isNaN(itemIndex) || itemIndex < 0) {
+            console.error(`无效的索引: ${index}`);
+            return;
+        }
+        
+        // 检查是否已存在
+        const existingItem = this.filmstrip.querySelector(`[data-index="${itemIndex}"]`);
+        if (existingItem && !existingItem.classList.contains('loading-placeholder')) {
+            // 如果已存在且不是占位符，只更新图片
+            const img = existingItem.querySelector('img');
+            if (img && cardData.imageUrl) {
+                img.src = cardData.imageUrl;
+            }
+            return;
+        }
+        
+        // 如果存在占位符，更新它
+        if (existingItem && existingItem.classList.contains('loading-placeholder')) {
+            this.updateFilmstripItem(cardData, itemIndex);
+            return;
+        }
+        
+        const item = document.createElement('div');
+        item.className = `filmstrip-item ${itemIndex === this.currentIndex ? 'active' : ''}`;
+        item.dataset.index = itemIndex.toString();
+        
+        const img = document.createElement('img');
+        img.alt = cardData.location;
+        img.loading = 'lazy';
+        img.crossOrigin = 'anonymous'; // 允许跨域加载
+        
+        // 预加载图片
+        const preloadImg = new Image();
+        preloadImg.crossOrigin = 'anonymous';
+        preloadImg.onload = () => {
+            img.src = cardData.imageUrl;
+        };
+        preloadImg.onerror = () => {
+            // 即使预加载失败也尝试显示
+            img.src = cardData.imageUrl;
+        };
+        preloadImg.src = cardData.imageUrl;
+        
+        item.appendChild(img);
+        item.addEventListener('click', () => this.goToCard(itemIndex));
+        
+        // 添加淡入动画
+        item.style.opacity = '0';
+        item.style.transform = 'translateY(10px)';
+        
+        this.filmstrip.appendChild(item);
+        
+        // 触发动画
+        setTimeout(() => {
+            item.style.transition = 'all 0.3s ease';
+            item.style.opacity = '1';
+            item.style.transform = 'translateY(0)';
+        }, 10);
+    }
+    
+    /**
+     * 更新主卡片显示
+     */
+    updateMainCard() {
+        if (this.cardsData.length === 0) return;
+        
+        // 确保索引在有效范围内
+        if (this.currentIndex < 0 || this.currentIndex >= this.cardsData.length) {
+            console.warn(`⚠️ 索引 ${this.currentIndex} 超出范围 [0, ${this.cardsData.length - 1}]，重置为 0`);
+            this.currentIndex = 0;
+        }
+        
+        const cardData = this.cardsData[this.currentIndex];
+        if (!cardData) {
+            console.error('卡片数据不存在');
+            return;
+        }
+        
+        const isReal = cardData.type === 'real';
+        
+        // 更新图片（预加载确保显示）
+        const mainCardImage = document.getElementById('main-card-image');
+        // 清除任何动画效果
+        mainCardImage.style.animation = 'none';
+        mainCardImage.style.backgroundSize = 'cover';
+        mainCardImage.style.backgroundPosition = 'center';
+        
+        if (cardData.imageUrl) {
+            // 预加载图片
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                mainCardImage.style.backgroundImage = `url(${cardData.imageUrl})`;
+                mainCardImage.style.animation = 'none'; // 确保清除动画
+            };
+            img.onerror = () => {
+                // 即使预加载失败也尝试显示
+                mainCardImage.style.backgroundImage = `url(${cardData.imageUrl})`;
+                mainCardImage.style.animation = 'none'; // 确保清除动画
+            };
+            img.src = cardData.imageUrl;
+        } else {
+            // 图片加载中，显示静态渐变占位背景
+            mainCardImage.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+            mainCardImage.style.animation = 'none'; // 确保清除动画
+        }
+        
+        // 更新地点名称
+        document.getElementById('location-badge').textContent = cardData.locationEn || cardData.location;
+        document.getElementById('location-title').textContent = cardData.location;
+        
+        // 更新地点类型标签
+        const typeBadge = document.getElementById('location-type-badge');
+        if (isReal) {
+            typeBadge.textContent = '真实地点';
+            typeBadge.className = 'location-type-badge real';
+        } else {
+            typeBadge.textContent = '虚构地点';
+            typeBadge.className = 'location-type-badge fictional';
+        }
+        
+        // 更新 Quote
+        document.getElementById('quote-text-main').textContent = cardData.quote;
+        document.getElementById('quote-source').textContent = `—— 《${cardData.bookTitle}》`;
+        
+        // 更新调试信息
+        this.updateDebugInfo(cardData);
+        
+        // 更新操作按钮（仅真实地点显示谷歌搜索按钮）
+        const googleBtn = document.getElementById('google-search-btn');
+        const aigcBtn = document.getElementById('aigc-generate-btn');
+        
+        if (isReal) {
+            // 真实地点：显示谷歌搜索按钮
+            googleBtn.classList.remove('hidden');
+            googleBtn.href = `https://www.google.com/search?q=${encodeURIComponent(cardData.locationEn || cardData.location)}`;
+        } else {
+            // 虚构地点：隐藏所有操作按钮（AI生图已自动完成，无需手动生成）
+            googleBtn.classList.add('hidden');
+        }
+        
+        // 始终隐藏AI生成按钮（已移除该功能）
+        if (aigcBtn) {
+            aigcBtn.classList.add('hidden');
+        }
+        
+        // 更新胶卷带激活状态
+        this.updateFilmstripActive();
+    }
+    
+    /**
+     * 创建胶卷带
+     */
+    createFilmstrip() {
+        this.filmstrip.innerHTML = '';
+        
+        this.cardsData.forEach((cardData, index) => {
+            // 确保索引是数字类型
+            const itemIndex = parseInt(index, 10);
+            if (isNaN(itemIndex) || itemIndex < 0) {
+                console.error(`无效的索引: ${index}`);
+                return;
+            }
+            
+            const item = document.createElement('div');
+            item.className = `filmstrip-item ${itemIndex === this.currentIndex ? 'active' : ''}`;
+            item.dataset.index = itemIndex.toString();
+            
+            const img = document.createElement('img');
+            img.alt = cardData.location;
+            img.loading = 'lazy';
+            img.crossOrigin = 'anonymous'; // 允许跨域加载
+            
+            // 预加载图片
+            const preloadImg = new Image();
+            preloadImg.crossOrigin = 'anonymous';
+            preloadImg.onload = () => {
+                img.src = cardData.imageUrl;
+            };
+            preloadImg.onerror = () => {
+                // 即使预加载失败也尝试显示
+                img.src = cardData.imageUrl;
+            };
+            preloadImg.src = cardData.imageUrl;
+            
+            item.appendChild(img);
+            item.addEventListener('click', () => this.goToCard(itemIndex));
+            
+            this.filmstrip.appendChild(item);
+        });
+        
+        // 验证创建后的数量一致性
+        const createdCount = this.filmstrip.querySelectorAll('.filmstrip-item').length;
+        if (createdCount !== this.cardsData.length) {
+            console.warn(`⚠️ 胶卷带创建后数量不一致: 创建了 ${createdCount} 个，数据有 ${this.cardsData.length} 个`);
+        }
+    }
+    
+    /**
+     * 更新胶卷带激活状态
+     */
+    updateFilmstripActive() {
+        const items = this.filmstrip.querySelectorAll('.filmstrip-item');
+        items.forEach((item) => {
+            // 使用 dataset.index 而不是数组索引，确保一致性
+            const itemIndex = parseInt(item.dataset.index, 10);
+            if (itemIndex === this.currentIndex) {
+                item.classList.add('active');
+                // 滚动到可见区域
+                item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            } else {
+                item.classList.remove('active');
+            }
+        });
+    }
+    
+    /**
+     * 切换到指定卡片
+     */
+    goToCard(index) {
+        if (index < 0 || index >= this.cardsData.length || this.isSwitching) return;
+        if (index === this.currentIndex) return;
+        
+        this.isSwitching = true;
+        this.currentIndex = index;
+        
+        // 添加切换动画
+        this.mainCard.classList.add('switching');
+        
+        setTimeout(() => {
+            this.updateMainCard();
+            // updateMainCard 内部不再调用 updateCounter，避免重复
+            // 但我们需要在这里调用以确保计数器更新
+            this.updateCounter();
+            this.updateNavigationButtons();
+            
+            setTimeout(() => {
+                this.mainCard.classList.remove('switching');
+                this.isSwitching = false;
+            }, 100);
+        }, 200);
+    }
+    
+    /**
+     * 上一张卡片
+     */
+    prevCard() {
+        const prevIndex = this.currentIndex > 0 ? this.currentIndex - 1 : this.cardsData.length - 1;
+        this.goToCard(prevIndex);
+    }
+    
+    /**
+     * 下一张卡片
+     */
+    nextCard() {
+        const nextIndex = this.currentIndex < this.cardsData.length - 1 ? this.currentIndex + 1 : 0;
+        this.goToCard(nextIndex);
+    }
+    
+    /**
+     * 更新导航按钮显示状态
+     */
+    updateNavigationButtons() {
+        if (this.cardsData.length > 1) {
+            this.prevBtn.classList.remove('hidden');
+            this.nextBtn.classList.remove('hidden');
+        } else {
+            this.prevBtn.classList.add('hidden');
+            this.nextBtn.classList.add('hidden');
+        }
+    }
+    
+    /**
+     * 更新计数器
+     */
+    updateCounter() {
+        // 获取胶卷带中的实际项目数量（包括占位符）
+        const filmstripItems = this.filmstrip.querySelectorAll('.filmstrip-item');
+        const filmstripCount = filmstripItems.length;
+        const dataCount = this.cardsData.length;
+        
+        // 确保索引在有效范围内
+        if (dataCount > 0) {
+            if (this.currentIndex < 0) {
+                console.warn(`⚠️ 当前索引 ${this.currentIndex} 小于 0，重置为 0`);
+                this.currentIndex = 0;
+            } else if (this.currentIndex >= dataCount) {
+                console.warn(`⚠️ 当前索引 ${this.currentIndex} 超出卡片数组长度 ${dataCount}，重置为 ${dataCount - 1}`);
+                this.currentIndex = Math.max(0, dataCount - 1);
+            }
+        }
+        
+        const currentIndexEl = document.getElementById('current-index');
+        const totalCountEl = document.getElementById('total-count');
+        
+        if (currentIndexEl) {
+            // 如果有数据，显示当前索引+1；否则显示0
+            const displayIndex = dataCount > 0 ? this.currentIndex + 1 : 0;
+            currentIndexEl.textContent = displayIndex;
+        }
+        
+        if (totalCountEl) {
+            // 显示 filmstrip 中的实际项目数量（包括占位符）
+            totalCountEl.textContent = filmstripCount > 0 ? filmstripCount : dataCount;
+        }
+    }
+    
+    /**
+     * 为当前虚构地点生成AIGC图片
+     */
+    async generateAIGCImageForCurrent() {
+        const cardData = this.cardsData[this.currentIndex];
+        if (cardData.type !== 'fictional') return;
+        
+        const btn = document.getElementById('aigc-generate-btn');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<svg class="animate-spin" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity="0.25"></circle><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> 生成中...';
+        
+        try {
+            const imageUrl = await this.generateAIGCImage(cardData.imageQuery || cardData.location);
+            
+            // 更新图片
+            cardData.imageUrl = imageUrl;
+            const mainCardImage = document.getElementById('main-card-image');
+            mainCardImage.style.animation = 'none'; // 确保清除动画
+            mainCardImage.style.backgroundImage = `url(${imageUrl})`;
+            
+            // 更新胶卷带中的图片
+            const filmstripItem = this.filmstrip.querySelector(`[data-index="${this.currentIndex}"]`);
+            if (filmstripItem) {
+                filmstripItem.querySelector('img').src = imageUrl;
+            }
+            
+        } catch (error) {
+            console.error('AI 生图失败:', error);
+            alert('图片生成失败，请稍后重试');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+    
+    /**
+     * 调用 AIGC API 生成图片
+     */
+    /**
+     * 使用多个免费 AI 生图服务（规避速率限制）
+     */
+    async generateAIGCImage(prompt, retryCount = 0) {
+        // 如果配置了 AIGC_API_KEY，使用付费 API
+        if (CONFIG.AIGC_API_KEY) {
+            try {
+                const response = await fetch(CONFIG.AIGC_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${CONFIG.AIGC_API_KEY}`
+                    },
+                    body: JSON.stringify({
+                        model: CONFIG.AIGC_MODEL || 'dall-e-3',
+                        prompt: `${prompt}, cinematic, atmospheric, high quality, 4k`,
+                        n: 1,
+                        size: '1024x1024'
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error?.message || `AIGC API 请求失败: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                return data.data[0].url;
+            } catch (error) {
+                console.warn('付费 AIGC API 失败，降级使用免费服务:', error);
+                // 降级到免费服务
+            }
+        }
+        
+        // 多个免费 AI 生图服务备选方案（按优先级排序）
+        // 注意：只包含可以直接通过 URL 访问的服务，避免需要 Token 或 POST 请求的服务
+        const freeServices = [
+            {
+                name: 'Pollinations.ai',
+                generateUrl: (prompt, seed) => {
+                    const enhancedPrompt = `${prompt} cinematic atmospheric high quality 8k masterpiece`;
+                    const encodedPrompt = encodeURIComponent(enhancedPrompt);
+                    return `https://image.pollinations.ai/prompt/${encodedPrompt}?width=960&height=600&seed=${seed}&nologo=true`;
+                },
+                // 如果注册了账号，可以使用 API key 避免速率限制
+                // 访问 https://pollinations.ai/ 注册获取免费额度
+                useApiKey: false
+            },
+            {
+                name: 'Pollinations.ai (备用域名)',
+                generateUrl: (prompt, seed) => {
+                    const enhancedPrompt = `${prompt} cinematic atmospheric high quality 8k masterpiece`;
+                    const encodedPrompt = encodeURIComponent(enhancedPrompt);
+                    // 使用不同的域名可能绕过某些限制
+                    return `https://pollinations.ai/prompt/${encodedPrompt}?width=960&height=600&seed=${seed}&nologo=true`;
+                }
+            }
+            // 注意：Hugging Face Inference API 需要 Token 和 POST 请求，不适合前端直接调用
+            // 如需使用，请通过后端代理接口实现
+        ];
+        
+        // 选择服务（如果重试，切换到下一个服务）
+        const serviceIndex = Math.min(retryCount, freeServices.length - 1);
+        const service = freeServices[serviceIndex];
+        const seed = Math.floor(Math.random() * 10000);
+        
+        console.log(`🎨 使用免费 AI 生图服务 (${service.name}) - 提示词: ${prompt}${retryCount > 0 ? ` (重试 ${retryCount})` : ''}`);
+        
+        const imageUrl = service.generateUrl(prompt, seed);
+        
+        // 预加载图片，确保图片加载完成后再返回
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            
+            // 设置超时（30秒）
+            const timeout = setTimeout(() => {
+                img.onerror = null;
+                img.onload = null;
+                console.warn(`⏱️ ${service.name} 请求超时，尝试下一个服务...`);
+                // 如果还有备选服务，重试下一个
+                if (retryCount < freeServices.length - 1) {
+                    this.generateAIGCImage(prompt, retryCount + 1)
+                        .then(resolve)
+                        .catch(reject);
+                } else {
+                    // 所有服务都失败，返回备用图片
+                    console.error(`❌ 所有免费 AI 生图服务都失败，使用备用图片`);
+                    resolve(this.getFallbackImage(prompt));
+                }
+            }, 30000);
+            
+            img.onload = () => {
+                clearTimeout(timeout);
+                console.log(`✅ AI生图加载成功 (${service.name}): ${imageUrl}`);
+                resolve(imageUrl);
+            };
+            
+            img.onerror = (error) => {
+                clearTimeout(timeout);
+                console.warn(`⚠️ ${service.name} 加载失败: ${imageUrl}`);
+                
+                // 如果是速率限制错误，尝试下一个服务
+                if (retryCount < freeServices.length - 1) {
+                    console.log(`🔄 切换到下一个免费服务...`);
+                    // 添加短暂延迟避免连续请求
+                    setTimeout(() => {
+                        this.generateAIGCImage(prompt, retryCount + 1)
+                            .then(resolve)
+                            .catch(reject);
+                    }, 1000 * (retryCount + 1)); // 递增延迟：1s, 2s, 3s...
+                } else {
+                    // 所有服务都失败，返回备用图片
+                    console.error(`❌ 所有免费 AI 生图服务都失败，使用备用图片`);
+                    resolve(this.getFallbackImage(prompt));
+                }
+            };
+            
+            img.src = imageUrl;
+        });
+    }
+    
+    // createCard 方法已移除，现在使用 updateMainCard 和 createFilmstrip
+    
+    showInput() {
+        this.loadingScreen.classList.add('hidden');
+        this.resultScreen.classList.add('hidden');
+        this.inputScreen.classList.remove('hidden');
+        this.bookInput.value = '';
+        this.bookInput.focus();
+    }
+    
+    showError(message) {
+        this.errorMessage.textContent = message;
+        this.errorMessage.classList.remove('hidden');
+        this.showInput();
+    }
+    
+    // flipCard 方法已移除，现在每个卡片都有自己的点击事件
+    
+    async refreshImage() {
+        // 这个方法已废弃，现在每个卡片都有自己的刷新按钮
+        // 保留用于兼容性
+        console.log('refreshImage 已废弃，请使用单个卡片的刷新按钮');
+    }
+    
+    reset() {
+        this.cardsData = [];
+        this.currentIndex = 0;
+        this.isSwitching = false;
+        this.showInput();
+    }
+    
+    // setupLongPress 方法已移除，长按保存功能可以在 createCard 中为每个卡片单独添加
+    
+    async saveAsImage() {
+        // 创建画布，将正反面拼接
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        const cardWidth = 600;
+        const cardHeight = 400;
+        canvas.width = cardWidth;
+        canvas.height = cardHeight * 2; // 正反面拼接
+        
+        // 绘制正面
+        const frontImg = new Image();
+        frontImg.crossOrigin = 'anonymous';
+        
+        await new Promise((resolve) => {
+            frontImg.onload = () => {
+                // 绘制背景图
+                ctx.drawImage(frontImg, 0, 0, cardWidth, cardHeight);
+                
+                // 绘制文字
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                ctx.font = '14px "Libre Baskerville", serif';
+                const currentCard = this.cardsData[this.currentIndex];
+                if (currentCard) {
+                    ctx.fillText(
+                        `${currentCard.locationEn || currentCard.location} | ${currentCard.bookTitle}`,
+                        24,
+                        cardHeight - 24
+                    );
+                }
+                
+                resolve();
+            };
+            const currentCard = this.cardsData[this.currentIndex];
+            if (!currentCard || !currentCard.imageUrl) {
+                console.error('当前卡片数据不存在或图片URL未定义');
+                resolve();
+                return;
+            }
+            frontImg.src = currentCard.imageUrl;
+        });
+        
+        // 绘制背面（纸质背景 + 文字）
+        ctx.fillStyle = '#F5F1E8';
+        ctx.fillRect(0, cardHeight, cardWidth, cardHeight);
+        
+        // 绘制纸质纹理（简化版）
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.03)';
+        for (let i = 0; i < cardWidth; i += 2) {
+            ctx.fillRect(i, cardHeight, 1, cardHeight);
+        }
+        for (let i = cardHeight; i < cardHeight * 2; i += 2) {
+            ctx.fillRect(0, i, cardWidth, 1);
+        }
+        
+        // 绘制邮票
+        const stampImg = new Image();
+        stampImg.crossOrigin = 'anonymous';
+        await new Promise((resolve) => {
+            stampImg.onload = () => {
+                ctx.drawImage(stampImg, 32, cardHeight + 32, 80, 80);
+                resolve();
+            };
+            const currentCard = this.cardsData[this.currentIndex];
+            if (!currentCard || !currentCard.imageUrl) {
+                console.error('当前卡片数据不存在或图片URL未定义');
+                resolve();
+                return;
+            }
+            stampImg.src = currentCard.imageUrl;
+        });
+        
+        // 绘制金句（手写体样式）
+        ctx.fillStyle = '#1C1917';
+        ctx.font = '18px "Kalam", cursive';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        const currentCard = this.cardsData[this.currentIndex];
+        if (!currentCard) {
+            console.error('当前卡片数据不存在');
+            return;
+        }
+        const quoteLines = this.wrapText(ctx, currentCard.quote, cardWidth - 200);
+        const lineHeight = 28;
+        const startY = cardHeight + (cardHeight - (quoteLines.length * lineHeight)) / 2;
+        
+        quoteLines.forEach((line, index) => {
+            ctx.fillText(line, cardWidth / 2, startY + index * lineHeight);
+        });
+        
+        // 下载图片
+        canvas.toBlob((blob) => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const currentCard = this.cardsData[this.currentIndex];
+            a.download = `BookVibe_${currentCard ? currentCard.bookTitle : 'card'}_${Date.now()}.png`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    }
+    
+    wrapText(ctx, text, maxWidth) {
+        const words = text.split('');
+        const lines = [];
+        let currentLine = '';
+        
+        for (let i = 0; i < words.length; i++) {
+            const testLine = currentLine + words[i];
+            const metrics = ctx.measureText(testLine);
+            
+            if (metrics.width > maxWidth && currentLine !== '') {
+                lines.push(currentLine);
+                currentLine = words[i];
+            } else {
+                currentLine = testLine;
+            }
+        }
+        
+        if (currentLine) {
+            lines.push(currentLine);
+        }
+        
+        return lines;
+    }
+    
+    // setupParallax 方法已移除，视差效果可以在 createCard 中为每个卡片单独添加
+    
+    /**
+     * 更新调试信息
+     */
+    updateDebugInfo(cardData) {
+        const debugImageSource = document.getElementById('debug-image-source');
+        const debugImageQuery = document.getElementById('debug-image-query');
+        const debugQueryLabel = document.getElementById('debug-query-label');
+        const debugImageApi = document.getElementById('debug-image-api');
+        const debugApiItem = document.getElementById('debug-api-item');
+        const debugImageUrl = document.getElementById('debug-image-url');
+        
+        const isFictional = cardData.type === 'fictional';
+        
+        // 设置图片来源
+        if (debugImageSource) {
+            debugImageSource.textContent = isFictional ? 'AI生图' : '图片搜索';
+        }
+        
+        // 设置关键词标签和内容
+        if (debugQueryLabel) {
+            debugQueryLabel.textContent = isFictional ? '生成提示词:' : '搜索关键词:';
+        }
+        
+        if (debugImageQuery) {
+            debugImageQuery.textContent = cardData.imageQuery || '未设置';
+        }
+        
+        // 图片API/生成服务信息
+        if (debugApiItem && debugImageApi) {
+            debugApiItem.style.display = 'flex';
+            if (isFictional) {
+                // 虚构地点：显示AI生成服务信息
+                const serviceName = CONFIG.AIGC_API_KEY ? 
+                    (CONFIG.AIGC_MODEL || 'DALL-E') : 
+                    'Pollinations.ai (免费)';
+                debugImageApi.textContent = serviceName;
+                // 更新标签文本
+                const apiLabel = debugApiItem.querySelector('.debug-label');
+                if (apiLabel) {
+                    apiLabel.textContent = '生成服务:';
+                }
+            } else {
+                // 真实地点：显示图片搜索API信息
+                const apiType = (CONFIG.IMAGE_API_TYPE || 'picsum').toLowerCase();
+                debugImageApi.textContent = apiType === 'picsum' ? 'Picsum (免费)' : 
+                                           apiType === 'pexels' ? 'Pexels' : 
+                                           apiType === 'unsplash' ? 'Unsplash' : apiType;
+                // 更新标签文本
+                const apiLabel = debugApiItem.querySelector('.debug-label');
+                if (apiLabel) {
+                    apiLabel.textContent = '图片API:';
+                }
+            }
+        }
+        
+        if (debugImageUrl && cardData.imageUrl) {
+            debugImageUrl.href = cardData.imageUrl;
+        }
+        
+        // 控制台输出详细信息
+        console.log(isFictional ? '🎨 AI生图信息:' : '📸 图片搜索信息:', {
+            地点: cardData.location,
+            '地点(英文)': cardData.locationEn,
+            [isFictional ? '生成提示词' : '搜索关键词']: cardData.imageQuery,
+            [isFictional ? '生成服务' : '图片API']: isFictional ? 
+                (CONFIG.AIGC_API_KEY ? (CONFIG.AIGC_MODEL || 'DALL-E') : 'Pollinations.ai (免费)') :
+                (CONFIG.IMAGE_API_TYPE || 'picsum'),
+            图片URL: cardData.imageUrl,
+            地点类型: isFictional ? '虚构地点' : '真实地点'
+        });
+    }
+    
+    /**
+     * 切换调试信息显示/隐藏
+     */
+    toggleDebugInfo() {
+        const debugContent = document.getElementById('debug-content');
+        const toggleBtn = document.getElementById('toggle-debug-btn');
+        
+        if (debugContent && toggleBtn) {
+            debugContent.classList.toggle('hidden');
+            toggleBtn.classList.toggle('expanded');
+        }
+    }
+}
+
+// 初始化应用
+document.addEventListener('DOMContentLoaded', () => {
+    new BookVibe();
+});

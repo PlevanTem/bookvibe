@@ -1,0 +1,25 @@
+{
+  "name": "bookvibe",
+  "version": "1.0.0",
+  "description": "BookVibe - 用一张卡片，连接文字与远方",
+  "main": "api-example.js",
+  "scripts": {
+    "start": "node api-example.js",
+    "dev": "nodemon api-example.js"
+  },
+  "keywords": [
+    "book",
+    "literature",
+    "postcard",
+    "travel"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
