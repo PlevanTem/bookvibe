@@ -13,8 +13,9 @@ const CONFIG = {
     // 2. AIGC 生图API配置 (用于虚构地点生成图片，可选)
     // 注意：如果不配置 AIGC_API_KEY，系统会自动使用免费的 Pollinations.ai 服务
     AIGC_API_KEY: "", // 请在 config.js 中配置（可选，不配置则使用免费服务）
-    AIGC_API_URL: "https://api.openai.com/v1/images/generations",
-    AIGC_MODEL: "dall-e-3",
+    AIGC_API_URL: "https://api-inference.modelscope.cn/v1/images/generations", // ModelScope 或 OpenAI API
+    AIGC_MODEL: "Tongyi-MAI/Z-Image-Turbo", // ModelScope Model-Id 或 "dall-e-3"
+    AIGC_API_TYPE: "modelscope", // "modelscope" 或 "openai"
     
     // 3. 图片搜索API配置 (用于真实地点搜索图片)
     IMAGE_API_TYPE: "picsum", // "picsum" (免费), "pexels", "unsplash"
@@ -22,6 +23,9 @@ const CONFIG = {
     PEXELS_API_KEY: "", // 请在 config.js 中配置（可选）
     UNSPLASH_API_URL: "https://api.unsplash.com/search/photos",
     UNSPLASH_API_KEY: "", // 请在 config.js 中配置（可选）
+    
+    // 后端代理配置（用于避免 CORS 问题）
+    BACKEND_PROXY_URL: "", // 后端代理 URL，例如: "/api/modelscope" 或 "http://localhost:3000/api/modelscope"
     
     // 其他配置
     IMAGE_PER_PLACE: 1,
@@ -39,6 +43,30 @@ class BookVibe {
         if (window.BOOKVIBE_CONFIG) {
             Object.assign(CONFIG, window.BOOKVIBE_CONFIG);
         }
+        
+        // 规范化 AIGC_API_TYPE（转换为小写，确保大小写不敏感）
+        if (CONFIG.AIGC_API_TYPE) {
+            CONFIG.AIGC_API_TYPE = CONFIG.AIGC_API_TYPE.toLowerCase().trim();
+        }
+        
+        // 规范化 BACKEND_PROXY_URL（确保以 / 开头，如果是相对路径）
+        if (CONFIG.BACKEND_PROXY_URL && !CONFIG.BACKEND_PROXY_URL.startsWith('http')) {
+            // 相对路径，确保以 / 开头
+            if (!CONFIG.BACKEND_PROXY_URL.startsWith('/')) {
+                CONFIG.BACKEND_PROXY_URL = '/' + CONFIG.BACKEND_PROXY_URL;
+            }
+        }
+        
+        // 初始化时打印配置信息（用于调试）
+        console.log('📋 BookVibe 配置已加载:', {
+            LLM_API_KEY: CONFIG.LLM_API_KEY ? CONFIG.LLM_API_KEY.substring(0, 10) + '...' : '未配置',
+            LLM_MODEL: CONFIG.LLM_MODEL,
+            AIGC_API_KEY: CONFIG.AIGC_API_KEY ? CONFIG.AIGC_API_KEY.substring(0, 10) + '...' : '未配置',
+            AIGC_API_TYPE: CONFIG.AIGC_API_TYPE || '未配置',
+            AIGC_API_URL: CONFIG.AIGC_API_URL,
+            AIGC_MODEL: CONFIG.AIGC_MODEL,
+            IMAGE_API_TYPE: CONFIG.IMAGE_API_TYPE
+        });
         
         // 检查必要的 API 配置
         this.checkAPIConfig();
@@ -59,6 +87,43 @@ class BookVibe {
         if (missingAPIs.length > 0) {
             console.warn('⚠️ 缺少必要的 API 配置:', missingAPIs.join(', '));
             console.warn('请在 config.js 或 app.js 中配置你的 API keys');
+        }
+        
+        // 检查 AIGC API 配置
+        if (CONFIG.AIGC_API_KEY && CONFIG.AIGC_API_KEY.trim() !== '') {
+            const apiType = (CONFIG.AIGC_API_TYPE || 'openai').toLowerCase().trim();
+            if (apiType === 'modelscope') {
+                // 验证 ModelScope 配置
+                if (!CONFIG.AIGC_MODEL || CONFIG.AIGC_MODEL.trim() === '') {
+                    console.warn('⚠️ ModelScope API 已配置，但 AIGC_MODEL 未设置，将使用默认模型');
+                }
+                if (!CONFIG.AIGC_API_URL || !CONFIG.AIGC_API_URL.includes('modelscope')) {
+                    console.warn('⚠️ ModelScope API 已配置，但 AIGC_API_URL 可能不正确:', CONFIG.AIGC_API_URL);
+                }
+                
+                // 检查后端代理配置
+                const backendProxyUrl = CONFIG.BACKEND_PROXY_URL || '';
+                if (!backendProxyUrl || backendProxyUrl.trim() === '') {
+                    console.error('❌ ModelScope API 需要后端代理，但 BACKEND_PROXY_URL 未配置！');
+                    console.error('💡 请在 config.js 中设置: BACKEND_PROXY_URL: "/api/modelscope"');
+                    console.error('💡 并确保后端服务器正在运行: node api-example.js');
+                } else {
+                    console.log('✅ ModelScope API 配置完整:', {
+                        model: CONFIG.AIGC_MODEL || 'Tongyi-MAI/Z-Image-Turbo (默认)',
+                        apiUrl: CONFIG.AIGC_API_URL,
+                        apiKeyPrefix: CONFIG.AIGC_API_KEY.substring(0, 10) + '...',
+                        backendProxy: backendProxyUrl
+                    });
+                    console.log('💡 请确保后端服务器正在运行: node api-example.js');
+                }
+            } else {
+                console.log('✅ OpenAI DALL-E API 已配置:', {
+                    model: CONFIG.AIGC_MODEL,
+                    apiUrl: CONFIG.AIGC_API_URL
+                });
+            }
+        } else {
+            console.log('ℹ️ 未配置 AIGC_API_KEY，将使用免费的 Pollinations.ai 服务');
         }
     }
     
@@ -176,41 +241,179 @@ class BookVibe {
             const imagePromises = placesData.map(async (place, i) => {
                 const imageQuery = place.imageQuery || `${place.locationEn || place.location} atmospheric cinematic`;
                 const locationType = place.type || 'real';
-                let imageUrl;
+                let imageUrl = null;
+                
+                // 获取对应的卡片数据引用
+                const cardData = cardsData[i];
                 
                 try {
-                    // 真实地点：搜索图片；虚构地点：使用AI生图（付费API或免费服务）
+                    // 真实地点：搜索图片；虚构地点：使用AI生图（付费API → 免费AI生图 → 搜图）
                     if (locationType === 'fictional') {
-                        // 虚构地点优先使用AI生图（如果配置了付费API则使用付费，否则使用免费的Pollinations.ai）
-                        // 为免费 AI 生图添加延迟，避免触发速率限制（每个请求间隔 2-5 秒）
-                        if (!CONFIG.AIGC_API_KEY) {
+                        // 虚构地点：尝试付费API → 免费AI生图 → 搜图（降级策略）
+                        this.updateFilmstripPlaceholderStatus(i, 'AI生成中...');
+                        
+                        // Step 1: 尝试付费 API（如果配置了）
+                        if (CONFIG.AIGC_API_KEY && CONFIG.AIGC_API_KEY.trim() !== '') {
+                            const apiType = (CONFIG.AIGC_API_TYPE || 'openai').toLowerCase().trim();
+                            const statusText = apiType === 'modelscope' ? 'ModelScope生成中...' : '付费API生成中...';
+                            this.updateFilmstripPlaceholderStatus(i, statusText);
+                            
+                            try {
+                                console.log(`🎨 [${place.location}] Step 1: 尝试付费 API 生成图片`);
+                                imageUrl = await this.generateAIGCImage(imageQuery, 0, false); // false = 不降级到免费服务
+                                console.log(`✅ [${place.location}] 付费 API 生成成功`);
+                                // 成功：更新状态并刷新预览图
+                                this.updateFilmstripPlaceholderStatus(i, '加载中...');
+                                // 立即更新卡片数据并刷新预览
+                                cardData.imageUrl = imageUrl;
+                                this.updateFilmstripItem(cardData, i);
+                                if (this.currentIndex === i) {
+                                    this.updateMainCard();
+                                }
+                            } catch (error) {
+                                console.warn(`⚠️ [${place.location}] Step 1 失败，降级到免费 AI 生图:`, error.message);
+                                this.updateFilmstripPlaceholderStatus(i, '免费AI生成中...');
+                                
+                                // Step 2: 尝试免费 AI 生图
+                                try {
+                                    // 为免费 AI 生图添加延迟，避免触发速率限制
+                                    const delay = 2000 + Math.random() * 3000; // 2-5秒随机延迟
+                                    await new Promise(resolve => setTimeout(resolve, delay * i)); // 递增延迟
+                                    
+                                    console.log(`🎨 [${place.location}] Step 2: 尝试免费 AI 生图`);
+                                    imageUrl = await this.generateAIGCImage(imageQuery, 0, true); // true = 使用免费服务
+                                    console.log(`✅ [${place.location}] 免费 AI 生图成功`);
+                                    // 成功：更新状态并刷新预览图
+                                    this.updateFilmstripPlaceholderStatus(i, '加载中...');
+                                    cardData.imageUrl = imageUrl;
+                                    this.updateFilmstripItem(cardData, i);
+                                    if (this.currentIndex === i) {
+                                        this.updateMainCard();
+                                    }
+                                } catch (freeError) {
+                                    console.warn(`⚠️ [${place.location}] Step 2 失败，降级到搜图:`, freeError.message);
+                                    this.updateFilmstripPlaceholderStatus(i, '搜索图片中...');
+                                    
+                                    // Step 3: 最后尝试搜图
+                                    try {
+                                        console.log(`🔍 [${place.location}] Step 3: 尝试搜图`);
+                                        imageUrl = await this.searchImage(imageQuery);
+                                        console.log(`✅ [${place.location}] 搜图成功`);
+                                        // 成功：更新状态并刷新预览图
+                                        this.updateFilmstripPlaceholderStatus(i, '加载中...');
+                                        cardData.imageUrl = imageUrl;
+                                        this.updateFilmstripItem(cardData, i);
+                                        if (this.currentIndex === i) {
+                                            this.updateMainCard();
+                                        }
+                                    } catch (searchError) {
+                                        console.error(`❌ [${place.location}] 所有方案都失败，使用备用图片`);
+                                        this.updateFilmstripPlaceholderStatus(i, '加载失败');
+                                        imageUrl = this.getFallbackImage(imageQuery);
+                                        cardData.imageUrl = imageUrl;
+                                        this.updateFilmstripItem(cardData, i);
+                                        if (this.currentIndex === i) {
+                                            this.updateMainCard();
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // 未配置付费 API，直接使用免费 AI 生图
+                            this.updateFilmstripPlaceholderStatus(i, '免费AI生成中...');
+                            
+                            // 为免费 AI 生图添加延迟，避免触发速率限制
                             const delay = 2000 + Math.random() * 3000; // 2-5秒随机延迟
                             await new Promise(resolve => setTimeout(resolve, delay * i)); // 递增延迟
+                            
+                            try {
+                                console.log(`🎨 [${place.location}] 尝试免费 AI 生图`);
+                                imageUrl = await this.generateAIGCImage(imageQuery, 0, true); // true = 使用免费服务
+                                console.log(`✅ [${place.location}] 免费 AI 生图成功`);
+                                // 成功：更新状态并刷新预览图
+                                this.updateFilmstripPlaceholderStatus(i, '加载中...');
+                                cardData.imageUrl = imageUrl;
+                                this.updateFilmstripItem(cardData, i);
+                                if (this.currentIndex === i) {
+                                    this.updateMainCard();
+                                }
+                            } catch (freeError) {
+                                console.warn(`⚠️ [${place.location}] 免费 AI 生图失败，降级到搜图:`, freeError.message);
+                                this.updateFilmstripPlaceholderStatus(i, '搜索图片中...');
+                                
+                                // 降级到搜图
+                                try {
+                                    console.log(`🔍 [${place.location}] 尝试搜图`);
+                                    imageUrl = await this.searchImage(imageQuery);
+                                    console.log(`✅ [${place.location}] 搜图成功`);
+                                    // 成功：更新状态并刷新预览图
+                                    this.updateFilmstripPlaceholderStatus(i, '加载中...');
+                                    cardData.imageUrl = imageUrl;
+                                    this.updateFilmstripItem(cardData, i);
+                                    if (this.currentIndex === i) {
+                                        this.updateMainCard();
+                                    }
+                                } catch (searchError) {
+                                    console.error(`❌ [${place.location}] 所有方案都失败，使用备用图片`);
+                                    this.updateFilmstripPlaceholderStatus(i, '加载失败');
+                                    imageUrl = this.getFallbackImage(imageQuery);
+                                    cardData.imageUrl = imageUrl;
+                                    this.updateFilmstripItem(cardData, i);
+                                    if (this.currentIndex === i) {
+                                        this.updateMainCard();
+                                    }
+                                }
+                            }
                         }
-                        imageUrl = await this.generateAIGCImage(imageQuery);
                     } else {
                         // 真实地点搜索图片（可以并行，无速率限制问题）
-                        imageUrl = await this.searchImage(imageQuery);
+                        this.updateFilmstripPlaceholderStatus(i, '搜索图片中...');
+                        try {
+                            imageUrl = await this.searchImage(imageQuery);
+                            // 成功：更新状态并刷新预览图
+                            this.updateFilmstripPlaceholderStatus(i, '加载中...');
+                            cardData.imageUrl = imageUrl;
+                            this.updateFilmstripItem(cardData, i);
+                            if (this.currentIndex === i) {
+                                this.updateMainCard();
+                            }
+                        } catch (error) {
+                            console.warn(`⚠️ [${place.location}] 搜图失败，使用备用图片:`, error);
+                            this.updateFilmstripPlaceholderStatus(i, '加载失败');
+                            imageUrl = this.getFallbackImage(imageQuery);
+                            cardData.imageUrl = imageUrl;
+                            this.updateFilmstripItem(cardData, i);
+                            if (this.currentIndex === i) {
+                                this.updateMainCard();
+                            }
+                        }
                     }
                 } catch (error) {
-                    console.warn(`⚠️ 地点 ${place.location} 图片加载失败:`, error);
-                    imageUrl = this.getFallbackImage(imageQuery);
+                    // 如果还没有设置 imageUrl，使用备用图片
+                    if (!imageUrl) {
+                        console.warn(`⚠️ 地点 ${place.location} 图片加载失败:`, error);
+                        this.updateFilmstripPlaceholderStatus(i, '加载失败');
+                        imageUrl = this.getFallbackImage(imageQuery);
+                        cardData.imageUrl = imageUrl;
+                        this.updateFilmstripItem(cardData, i);
+                        if (this.currentIndex === i) {
+                            this.updateMainCard();
+                        }
+                    }
                 }
                 
-                // 更新卡片数据的图片URL（卡片数据已在之前创建）
-                const cardData = cardsData[i];
-                cardData.imageUrl = imageUrl;
-                
-                // 更新 filmstrip 项（从占位符更新为实际图片）
-                this.updateFilmstripItem(cardData, i);
+                // 确保 imageUrl 已设置到 cardData（在降级逻辑中已经设置并更新了预览）
+                // 这里只做最终检查和进度更新
+                if (!cardData.imageUrl && imageUrl) {
+                    cardData.imageUrl = imageUrl;
+                    this.updateFilmstripItem(cardData, i);
+                    if (this.currentIndex === i) {
+                        this.updateMainCard();
+                    }
+                }
                 
                 // 更新进度
                 completedCount++;
-                
-                // 如果当前显示的是这个卡片，立即更新主卡片图片
-                if (this.currentIndex === i) {
-                    this.updateMainCard();
-                }
                 
                 return cardData;
             });
@@ -493,7 +696,7 @@ class BookVibe {
 1. 识别作品中**最经典/代表性/最具氛围感**的${CONFIG.MIN_PLACES}-${CONFIG.MAX_PLACES}个POI（可以是真实地点或虚构地点）
 2. 为每个地点判断是"真实地点"还是"虚构地点"，真实地点是指现实中存在的地理位置，虚构地点是指作品中创造的地点
 3. 为每个地点从作品（书籍-原文/电影-台词）中quote一段描写该地点或体现该地点情绪的**原文段落**（中文书籍用中文，英文书籍用英文，80-150字）
-4. 为每个地点生成用于搜索最符合该POI特色的图片搜索关键词（不超过5个词，如果是虚拟地点，则生成生图提示词），如果是外国作品，则用英文搜索词，如果是中国作品，则用中文搜索词
+4. 根据地点类型（真实/虚拟），真实地点则生成用于搜索最符合该POI特色的图片搜索关键词（外国作品，用英文搜索词，中国作品，则用中文搜索词）；虚拟地点，则生成用于AI生图的提示词（提示词充分反映地点画面、特征、氛围、情绪等）；
 5. 要求地点不能重复、细节深入一点、不要出现太大颗粒度（现市、国家）信息、越多越好
 
 请以 JSON 数组格式返回：
@@ -503,7 +706,7 @@ class BookVibe {
         "locationEn": "地点1英文名",
         "type": "real" 或 "fictional",
         "quote": "原文段落（80-150字）",
-        "imageQuery": "搜索关键词1或生图提示词1"
+        "imageQuery": "搜索关键词 / 生图提示词"
     },
     ...
 ]
@@ -1048,12 +1251,17 @@ class BookVibe {
         item.className = `filmstrip-item loading-placeholder ${itemIndex === this.currentIndex ? 'active' : ''}`;
         item.dataset.index = itemIndex.toString();
         
+        // 根据地点类型确定加载状态文本
+        const locationType = place.type || 'real';
+        const statusText = locationType === 'fictional' ? '生成中...' : '搜索中...';
+        
         // 创建加载占位符
         const placeholder = document.createElement('div');
         placeholder.className = 'filmstrip-placeholder-content';
         placeholder.innerHTML = `
             <div class="filmstrip-loading-spinner"></div>
             <div class="filmstrip-placeholder-text">${place.location}</div>
+            <div class="filmstrip-loading-status">${statusText}</div>
         `;
         
         item.appendChild(placeholder);
@@ -1071,6 +1279,32 @@ class BookVibe {
             item.style.opacity = '1';
             item.style.transform = 'translateY(0)';
         }, 10);
+    }
+    
+    /**
+     * 更新占位符的加载状态文本
+     */
+    updateFilmstripPlaceholderStatus(index, statusText) {
+        if (!this.filmstrip) return;
+        
+        const item = this.filmstrip.querySelector(`[data-index="${index}"]`);
+        if (!item || !item.classList.contains('loading-placeholder')) return;
+        
+        const statusElement = item.querySelector('.filmstrip-loading-status');
+        if (statusElement) {
+            statusElement.textContent = statusText;
+            
+            // 根据状态文本添加错误样式
+            if (statusText.includes('失败') || statusText.includes('错误')) {
+                statusElement.style.color = '#DC2626';
+                statusElement.style.opacity = '1';
+                statusElement.style.fontWeight = '500';
+            } else {
+                statusElement.style.color = '#A8A29E';
+                statusElement.style.opacity = '0.8';
+                statusElement.style.fontWeight = 'normal';
+            }
+        }
     }
     
     /**
@@ -1095,38 +1329,87 @@ class BookVibe {
         
         // 如果存在但还是占位符，更新为实际图片
         if (item.classList.contains('loading-placeholder')) {
-            // 移除占位符内容
-            item.innerHTML = '';
-            item.classList.remove('loading-placeholder');
+            // 检查图片URL是否有效
+            if (!cardData.imageUrl || cardData.imageUrl.trim() === '') {
+                // 图片URL无效，保持占位符状态并显示错误
+                this.updateFilmstripPlaceholderStatus(itemIndex, '加载失败');
+                return;
+            }
             
-            // 创建图片
-            const img = document.createElement('img');
-            img.alt = cardData.location;
-            img.loading = 'lazy';
-            img.crossOrigin = 'anonymous';
+            // 更新状态为"加载中..."
+            this.updateFilmstripPlaceholderStatus(itemIndex, '加载中...');
             
-            // 预加载图片
+            // 预加载图片，确保图片可以正常显示后再更新DOM
             const preloadImg = new Image();
             preloadImg.crossOrigin = 'anonymous';
+            
             preloadImg.onload = () => {
+                // 图片加载成功，移除占位符内容并显示图片
+                item.innerHTML = '';
+                item.classList.remove('loading-placeholder');
+                
+                const img = document.createElement('img');
+                img.alt = cardData.location;
+                img.loading = 'lazy';
+                img.crossOrigin = 'anonymous';
                 img.src = cardData.imageUrl;
+                
+                item.appendChild(img);
+                
+                // 更新激活状态
+                if (itemIndex === this.currentIndex) {
+                    item.classList.add('active');
+                }
             };
+            
             preloadImg.onerror = () => {
-                img.src = cardData.imageUrl;
+                // 图片加载失败，保持占位符状态并显示错误
+                console.warn(`⚠️ 图片加载失败: ${cardData.imageUrl}`);
+                this.updateFilmstripPlaceholderStatus(itemIndex, '加载失败');
+                // 尝试使用备用图片
+                const fallbackUrl = this.getFallbackImage(cardData.imageQuery || cardData.location);
+                if (fallbackUrl && fallbackUrl !== cardData.imageUrl) {
+                    console.log(`🔄 尝试使用备用图片: ${fallbackUrl}`);
+                    cardData.imageUrl = fallbackUrl;
+                    // 重新尝试加载备用图片
+                    const retryImg = new Image();
+                    retryImg.crossOrigin = 'anonymous';
+                    retryImg.onload = () => {
+                        item.innerHTML = '';
+                        item.classList.remove('loading-placeholder');
+                        const img = document.createElement('img');
+                        img.alt = cardData.location;
+                        img.loading = 'lazy';
+                        img.crossOrigin = 'anonymous';
+                        img.src = fallbackUrl;
+                        item.appendChild(img);
+                        if (itemIndex === this.currentIndex) {
+                            item.classList.add('active');
+                        }
+                    };
+                    retryImg.onerror = () => {
+                        // 备用图片也失败，保持失败状态
+                        console.error(`❌ 备用图片也加载失败`);
+                    };
+                    retryImg.src = fallbackUrl;
+                }
             };
+            
             preloadImg.src = cardData.imageUrl;
-            
-            item.appendChild(img);
-            
-            // 更新激活状态
-            if (itemIndex === this.currentIndex) {
-                item.classList.add('active');
-            }
         } else {
             // 如果已经是图片项，只更新图片
             const img = item.querySelector('img');
             if (img && cardData.imageUrl) {
-                img.src = cardData.imageUrl;
+                // 预加载新图片
+                const preloadImg = new Image();
+                preloadImg.crossOrigin = 'anonymous';
+                preloadImg.onload = () => {
+                    img.src = cardData.imageUrl;
+                };
+                preloadImg.onerror = () => {
+                    console.warn(`⚠️ 图片更新失败: ${cardData.imageUrl}`);
+                };
+                preloadImg.src = cardData.imageUrl;
             }
         }
     }
@@ -1445,6 +1728,176 @@ class BookVibe {
     }
     
     /**
+     * 使用 ModelScope API 生成图片（异步任务模式）
+     * 优先使用后端代理避免 CORS 问题
+     */
+    async generateModelScopeImage(prompt) {
+        const apiKey = CONFIG.AIGC_API_KEY;
+        const model = CONFIG.AIGC_MODEL || 'Tongyi-MAI/Z-Image-Turbo';
+        const backendProxyUrl = CONFIG.BACKEND_PROXY_URL || '/api/modelscope';
+        
+        // 验证配置
+        if (!apiKey || apiKey.trim() === '') {
+            throw new Error('ModelScope API Key 未配置');
+        }
+        if (!model || model.trim() === '') {
+            throw new Error('ModelScope Model 未配置');
+        }
+        
+        console.log(`🔧 ModelScope API 配置:`, {
+            model: model,
+            hasApiKey: !!apiKey,
+            apiKeyPrefix: apiKey.substring(0, 10) + '...',
+            useBackendProxy: !!backendProxyUrl
+        });
+        
+        // Step 1: 创建任务（优先使用后端代理）
+        console.log(`🎨 ModelScope: 创建生图任务 - 提示词: ${prompt}`);
+        const enhancedPrompt = `${prompt}, cinematic, atmospheric, high quality, 4k`;
+        
+        let taskId;
+        let useBackendProxy = false;
+        
+        // 尝试使用后端代理（避免 CORS 问题）
+        if (backendProxyUrl && backendProxyUrl !== '') {
+            try {
+                const proxyUrl = `${backendProxyUrl}/generate`;
+                console.log(`📤 使用后端代理创建任务: ${proxyUrl}`);
+                console.log(`   - 提示词: ${enhancedPrompt.substring(0, 50)}...`);
+                console.log(`   - 模型: ${model}`);
+                
+                const createResponse = await fetch(proxyUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        prompt: enhancedPrompt,
+                        model: model
+                    })
+                });
+                
+                if (createResponse.ok) {
+                    const createData = await createResponse.json();
+                    taskId = createData.task_id;
+                    useBackendProxy = true;
+                    console.log(`✅ 后端代理创建任务成功，task_id: ${taskId}`);
+                } else {
+                    const errorText = await createResponse.text();
+                    let errorData;
+                    try {
+                        errorData = JSON.parse(errorText);
+                    } catch (e) {
+                        errorData = { message: errorText };
+                    }
+                    const errorMsg = errorData.error || errorData.message || `HTTP ${createResponse.status}`;
+                    console.error(`❌ 后端代理请求失败:`, {
+                        status: createResponse.status,
+                        statusText: createResponse.statusText,
+                        error: errorMsg,
+                        url: proxyUrl
+                    });
+                    throw new Error(`后端代理请求失败 (${createResponse.status}): ${errorMsg}。请确保后端服务器正在运行。`);
+                }
+            } catch (error) {
+                // 如果是网络错误（后端服务器未运行），给出明确提示
+                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError') || error.message.includes('ERR_')) {
+                    console.error(`❌ 后端代理不可用:`, error.message);
+                    console.error(`💡 请确保后端服务器正在运行:`);
+                    console.error(`   1. 运行: node api-example.js`);
+                    console.error(`   2. 检查后端服务器是否在 http://localhost:3000 运行`);
+                    console.error(`   3. 检查 BACKEND_PROXY_URL 配置是否正确: ${backendProxyUrl}`);
+                    throw new Error(`后端服务器不可用。请启动后端服务器（运行 node api-example.js）并确保它在运行。错误: ${error.message}`);
+                }
+                // 其他错误直接抛出
+                throw error;
+            }
+        } else {
+            // 如果没有配置后端代理，尝试直接调用（会失败，因为 CORS）
+            console.warn(`⚠️ 未配置 BACKEND_PROXY_URL，尝试直接调用 ModelScope API（将失败，因为 CORS）`);
+            throw new Error(`未配置后端代理（BACKEND_PROXY_URL）。ModelScope API 需要后端代理以避免 CORS 问题。请在 config.js 中设置 BACKEND_PROXY_URL: "/api/modelscope"`);
+        }
+        
+        if (!taskId) {
+            throw new Error('ModelScope API 未返回 task_id');
+        }
+        
+        // Step 2: 轮询任务状态
+        const maxAttempts = 60; // 最多轮询60次（5分钟）
+        const pollInterval = 5000; // 每5秒轮询一次
+        
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            // 第一次立即检查，之后等待间隔
+            if (attempt > 0) {
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+            }
+            
+            try {
+                let statusResponse;
+                
+                if (useBackendProxy) {
+                    // 使用后端代理查询状态
+                    const statusUrl = `${backendProxyUrl}/task/${taskId}`;
+                    statusResponse = await fetch(statusUrl, {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!statusResponse.ok) {
+                        const errorText = await statusResponse.text();
+                        let errorData;
+                        try {
+                            errorData = JSON.parse(errorText);
+                        } catch (e) {
+                            errorData = { message: errorText };
+                        }
+                        throw new Error(`后端代理状态查询失败 (${statusResponse.status}): ${errorData.error || errorData.message || statusResponse.statusText}`);
+                    }
+                } else {
+                    // 不应该到达这里，因为我们已经要求使用后端代理
+                    throw new Error('未使用后端代理，无法查询状态');
+                }
+                
+                const statusData = await statusResponse.json();
+                const taskStatus = statusData.task_status;
+                
+                console.log(`🔄 ModelScope: 任务状态检查 (${attempt + 1}/${maxAttempts}) - ${taskStatus}`);
+                
+                if (taskStatus === 'SUCCEED') {
+                    // 任务成功，获取图片URL
+                    if (statusData.output_images && statusData.output_images.length > 0) {
+                        const imageUrl = statusData.output_images[0];
+                        console.log(`✅ ModelScope: 图片生成成功！`);
+                        console.log(`   📸 图片 URL: ${imageUrl}`);
+                        console.log(`   🔍 URL 来源验证: ${imageUrl.includes('modelscope') || imageUrl.includes('aliyuncs') ? '✅ ModelScope' : '⚠️ 未知来源'}`);
+                        return imageUrl;
+                    } else {
+                        console.error(`❌ 任务成功但未返回图片URL，响应数据:`, statusData);
+                        throw new Error('任务成功但未返回图片URL');
+                    }
+                } else if (taskStatus === 'FAILED') {
+                    console.error(`❌ ModelScope 任务失败，响应数据:`, statusData);
+                    throw new Error(`图片生成失败: ${statusData.error_message || '未知错误'}`);
+                }
+                // 如果状态是 PENDING 或 RUNNING，继续轮询
+                
+            } catch (error) {
+                // 如果是最后一次尝试，抛出错误
+                if (attempt === maxAttempts - 1) {
+                    throw error;
+                }
+                // 否则继续轮询
+                console.warn(`⚠️ ModelScope: 状态查询出错，继续重试:`, error.message);
+            }
+        }
+        
+        // 超时
+        throw new Error('图片生成超时，请稍后重试');
+    }
+    
+    /**
      * 为当前虚构地点生成AIGC图片
      */
     async generateAIGCImageForCurrent() {
@@ -1481,15 +1934,61 @@ class BookVibe {
     }
     
     /**
+     * 生成 AI 图片（带降级策略）
+     * @param {string} prompt - 提示词
+     * @param {boolean} useFreeOnly - 是否只使用免费服务（true=跳过付费API，false=先尝试付费API）
+     * @returns {Promise<string>} 图片 URL
+     */
+    async generateAIGCImageWithFallback(prompt, useFreeOnly = false) {
+        // 如果不强制使用免费服务，先尝试付费 API
+        if (!useFreeOnly && CONFIG.AIGC_API_KEY && CONFIG.AIGC_API_KEY.trim() !== '') {
+            try {
+                return await this.generateAIGCImage(prompt, 0, false); // false = 不降级
+            } catch (error) {
+                // 付费 API 失败，继续尝试免费服务
+                console.warn('付费 API 失败，降级到免费服务');
+            }
+        }
+        
+        // 使用免费 AI 生图服务
+        return await this.generateAIGCImage(prompt, 0, true); // true = 使用免费服务
+    }
+    
+    /**
      * 调用 AIGC API 生成图片
      */
     /**
      * 使用多个免费 AI 生图服务（规避速率限制）
+     * @param {string} prompt - 提示词
+     * @param {number} retryCount - 重试次数
+     * @param {boolean} allowFreeFallback - 是否允许降级到免费服务（false=只尝试付费API，失败就抛出错误）
      */
-    async generateAIGCImage(prompt, retryCount = 0) {
+    async generateAIGCImage(prompt, retryCount = 0, allowFreeFallback = true) {
         // 如果配置了 AIGC_API_KEY，使用付费 API
-        if (CONFIG.AIGC_API_KEY) {
+        if (CONFIG.AIGC_API_KEY && CONFIG.AIGC_API_KEY.trim() !== '') {
+            // 规范化 API 类型（转换为小写）
+            const apiType = (CONFIG.AIGC_API_TYPE || 'openai').toLowerCase().trim();
+            
+            console.log(`🔑 AIGC API 配置检查:`, {
+                hasApiKey: !!CONFIG.AIGC_API_KEY,
+                apiKeyPrefix: CONFIG.AIGC_API_KEY.substring(0, 10) + '...',
+                apiType: apiType,
+                apiUrl: CONFIG.AIGC_API_URL,
+                model: CONFIG.AIGC_MODEL
+            });
+            
             try {
+                // ModelScope API（异步任务模式）
+                if (apiType === 'modelscope') {
+                    console.log(`🎨 使用 ModelScope API 生成图片 - 模型: ${CONFIG.AIGC_MODEL}`);
+                    console.log(`📝 提示词: ${prompt}`);
+                    const imageUrl = await this.generateModelScopeImage(prompt);
+                    console.log(`✅ ModelScope API 生成成功: ${imageUrl}`);
+                    return imageUrl;
+                }
+                
+                // OpenAI DALL-E API（同步模式）
+                console.log(`🎨 使用 OpenAI DALL-E API 生成图片 - 模型: ${CONFIG.AIGC_MODEL}`);
                 const response = await fetch(CONFIG.AIGC_API_URL, {
                     method: 'POST',
                     headers: {
@@ -1510,11 +2009,47 @@ class BookVibe {
                 }
                 
                 const data = await response.json();
+                console.log(`✅ OpenAI DALL-E API 生成成功`);
                 return data.data[0].url;
             } catch (error) {
-                console.warn('付费 AIGC API 失败，降级使用免费服务:', error);
-                // 降级到免费服务
+                console.error(`❌ ${apiType === 'modelscope' ? 'ModelScope' : 'OpenAI'} API 失败:`, error);
+                console.error(`错误详情:`, {
+                    message: error.message,
+                    stack: error.stack,
+                    config: {
+                        apiType: apiType,
+                        apiUrl: CONFIG.AIGC_API_URL,
+                        model: CONFIG.AIGC_MODEL,
+                        hasApiKey: !!CONFIG.AIGC_API_KEY,
+                        apiKeyPrefix: CONFIG.AIGC_API_KEY ? CONFIG.AIGC_API_KEY.substring(0, 10) + '...' : 'N/A'
+                    }
+                });
+                
+                // 如果允许降级，继续执行免费服务逻辑；否则抛出错误
+                if (!allowFreeFallback) {
+                    // 不允许降级，直接抛出错误
+                    const errorMsg = `${apiType === 'modelscope' ? 'ModelScope' : 'OpenAI'} API 生成失败: ${error.message}`;
+                    console.error(`❌ ${errorMsg}`);
+                    if (apiType === 'modelscope') {
+                        console.error(`💡 请检查以下配置:`);
+                        console.error(`   - AIGC_API_KEY: ${CONFIG.AIGC_API_KEY ? '已配置 (' + CONFIG.AIGC_API_KEY.substring(0, 10) + '...)' : '未配置'}`);
+                        console.error(`   - AIGC_API_TYPE: ${CONFIG.AIGC_API_TYPE}`);
+                        console.error(`   - AIGC_MODEL: ${CONFIG.AIGC_MODEL}`);
+                        console.error(`   - AIGC_API_URL: ${CONFIG.AIGC_API_URL}`);
+                        console.error(`   - BACKEND_PROXY_URL: ${CONFIG.BACKEND_PROXY_URL || '未配置'}`);
+                        console.error(`💡 如果遇到 CORS 错误，请确保后端服务器正在运行并配置了 BACKEND_PROXY_URL`);
+                    }
+                    throw new Error(errorMsg);
+                }
+                
+                // 允许降级，继续执行免费服务逻辑
+                console.warn(`⚠️ ${apiType === 'modelscope' ? 'ModelScope' : 'OpenAI'} API 失败，降级使用免费服务`);
             }
+        } else {
+            if (!allowFreeFallback) {
+                throw new Error('未配置 AIGC_API_KEY，且不允许使用免费服务');
+            }
+            console.log('ℹ️ 未配置 AIGC_API_KEY，使用免费服务 Pollinations.ai');
         }
         
         // 多个免费 AI 生图服务备选方案（按优先级排序）
@@ -1801,9 +2336,17 @@ class BookVibe {
             debugApiItem.style.display = 'flex';
             if (isFictional) {
                 // 虚构地点：显示AI生成服务信息
-                const serviceName = CONFIG.AIGC_API_KEY ? 
-                    (CONFIG.AIGC_MODEL || 'DALL-E') : 
-                    'Pollinations.ai (免费)';
+                let serviceName;
+                if (CONFIG.AIGC_API_KEY) {
+                    const apiType = CONFIG.AIGC_API_TYPE || 'openai';
+                    if (apiType === 'modelscope') {
+                        serviceName = CONFIG.AIGC_MODEL || 'ModelScope';
+                    } else {
+                        serviceName = CONFIG.AIGC_MODEL || 'DALL-E';
+                    }
+                } else {
+                    serviceName = 'Pollinations.ai (免费)';
+                }
                 debugImageApi.textContent = serviceName;
                 // 更新标签文本
                 const apiLabel = debugApiItem.querySelector('.debug-label');
@@ -1829,13 +2372,25 @@ class BookVibe {
         }
         
         // 控制台输出详细信息
+        let serviceInfo;
+        if (isFictional) {
+            if (CONFIG.AIGC_API_KEY) {
+                const apiType = CONFIG.AIGC_API_TYPE || 'openai';
+                serviceInfo = apiType === 'modelscope' ? 
+                    (CONFIG.AIGC_MODEL || 'ModelScope') : 
+                    (CONFIG.AIGC_MODEL || 'DALL-E');
+            } else {
+                serviceInfo = 'Pollinations.ai (免费)';
+            }
+        } else {
+            serviceInfo = CONFIG.IMAGE_API_TYPE || 'picsum';
+        }
+        
         console.log(isFictional ? '🎨 AI生图信息:' : '📸 图片搜索信息:', {
             地点: cardData.location,
             '地点(英文)': cardData.locationEn,
             [isFictional ? '生成提示词' : '搜索关键词']: cardData.imageQuery,
-            [isFictional ? '生成服务' : '图片API']: isFictional ? 
-                (CONFIG.AIGC_API_KEY ? (CONFIG.AIGC_MODEL || 'DALL-E') : 'Pollinations.ai (免费)') :
-                (CONFIG.IMAGE_API_TYPE || 'picsum'),
+            [isFictional ? '生成服务' : '图片API']: serviceInfo,
             图片URL: cardData.imageUrl,
             地点类型: isFictional ? '虚构地点' : '真实地点'
         });
