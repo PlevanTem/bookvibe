@@ -41,7 +41,11 @@ class BookVibe {
         this.currentMode = 'book'; // 当前模式：'book' 或 'place'
         this.checkinStatus = {}; // 打卡状态 {location: {checked: bool, note: string}}
         
-        // 合并用户配置（config.js 中的配置会覆盖默认值）
+        // 合并用户配置（优先级：localStorage > config.js > 默认值）
+        // 1. 先从 localStorage 读取用户配置
+        this.loadUserConfig();
+        
+        // 2. 再从 config.js 读取配置（如果 localStorage 中没有）
         if (window.BOOKVIBE_CONFIG) {
             Object.assign(CONFIG, window.BOOKVIBE_CONFIG);
         }
@@ -91,7 +95,10 @@ class BookVibe {
         
         if (missingAPIs.length > 0) {
             console.warn('⚠️ 缺少必要的 API 配置:', missingAPIs.join(', '));
-            console.warn('请在 config.js 或 app.js 中配置你的 API keys');
+            console.warn('💡 请点击右上角的设置按钮配置 API keys');
+            
+            // 在界面上显示提示
+            this.showConfigPrompt();
         }
         
         // 检查 AIGC API 配置
@@ -159,6 +166,13 @@ class BookVibe {
         this.checkinBtn = document.getElementById('checkin-btn');
         this.noteBtn = document.getElementById('note-btn');
         
+        // 配置界面元素
+        this.settingsBtn = document.getElementById('settings-btn');
+        this.configModal = document.getElementById('config-modal');
+        this.configCloseBtn = document.getElementById('config-close-btn');
+        this.configSaveBtn = document.getElementById('config-save-btn');
+        this.configResetBtn = document.getElementById('config-reset-btn');
+        
         // 事件监听
         this.submitBtn.addEventListener('click', () => this.handleSubmit());
         this.bookInput.addEventListener('keypress', (e) => {
@@ -210,6 +224,35 @@ class BookVibe {
             toggleDebugBtn.addEventListener('click', () => this.toggleDebugInfo());
         }
         
+        // 配置界面
+        if (this.settingsBtn) {
+            console.log('✅ 设置按钮已找到，绑定点击事件');
+            this.settingsBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('🔧 设置按钮被点击');
+                this.showConfigModal();
+            });
+        } else {
+            console.warn('⚠️ 设置按钮未找到，ID: settings-btn');
+        }
+        if (this.configCloseBtn) {
+            this.configCloseBtn.addEventListener('click', () => this.hideConfigModal());
+        }
+        if (this.configModal) {
+            this.configModal.addEventListener('click', (e) => {
+                if (e.target === this.configModal || e.target.classList.contains('config-modal-overlay')) {
+                    this.hideConfigModal();
+                }
+            });
+        }
+        if (this.configSaveBtn) {
+            this.configSaveBtn.addEventListener('click', () => this.saveConfig());
+        }
+        if (this.configResetBtn) {
+            this.configResetBtn.addEventListener('click', () => this.resetConfig());
+        }
+        
         // 键盘控制
         document.addEventListener('keydown', (e) => {
             if (this.resultScreen.classList.contains('hidden')) return;
@@ -225,6 +268,18 @@ class BookVibe {
         
         // 聚焦输入框
         this.bookInput.focus();
+        
+        // 调试：检查设置按钮
+        setTimeout(() => {
+            const btn = document.getElementById('settings-btn');
+            if (btn) {
+                console.log('✅ 设置按钮已找到:', btn);
+                console.log('   位置:', btn.getBoundingClientRect());
+                console.log('   z-index:', window.getComputedStyle(btn).zIndex);
+            } else {
+                console.error('❌ 设置按钮未找到');
+            }
+        }, 100);
     }
     
     /**
@@ -710,7 +765,9 @@ class BookVibe {
      */
     async callPlaceGLMAPI(places) {
         if (!CONFIG.LLM_API_KEY) {
-            throw new Error('LLM_API_KEY 未配置，请在 config.js 中配置你的 API key');
+            // 显示配置提示
+            this.showConfigPrompt();
+            throw new Error('LLM_API_KEY 未配置，请点击右上角设置按钮配置 API Key');
         }
         
         const isMultiple = places.length > 1;
@@ -1107,7 +1164,9 @@ ${isMultiple ? '[' : ''}
      */
     async callGLMAPI(bookName) {
         if (!CONFIG.LLM_API_KEY) {
-            throw new Error('LLM_API_KEY 未配置，请在 config.js 中配置你的 API key');
+            // 显示配置提示
+            this.showConfigPrompt();
+            throw new Error('LLM_API_KEY 未配置，请点击右上角设置按钮配置 API Key');
         }
         
         const prompt = `你是一位文学评论家和旅行家。请为作品《${bookName}》，完成以下要求，严格按照JSON格式返回，不要任何多余文字：
@@ -3091,6 +3150,198 @@ ${isMultiple ? '[' : ''}
             }
         } catch (e) {
             console.warn('无法加载打卡状态:', e);
+        }
+    }
+    
+    /**
+     * 从 localStorage 加载用户配置
+     */
+    loadUserConfig() {
+        try {
+            const saved = localStorage.getItem('bookvibe_user_config');
+            if (saved) {
+                const userConfig = JSON.parse(saved);
+                // 合并到 CONFIG
+                Object.assign(CONFIG, userConfig);
+                console.log('✅ 已从 localStorage 加载用户配置');
+            }
+        } catch (e) {
+            console.warn('无法加载用户配置:', e);
+        }
+    }
+    
+    /**
+     * 保存用户配置到 localStorage
+     */
+    saveUserConfig(config) {
+        try {
+            localStorage.setItem('bookvibe_user_config', JSON.stringify(config));
+            // 更新当前 CONFIG
+            Object.assign(CONFIG, config);
+            console.log('✅ 用户配置已保存');
+            return true;
+        } catch (e) {
+            console.error('无法保存用户配置:', e);
+            return false;
+        }
+    }
+    
+    /**
+     * 获取当前用户配置
+     */
+    getUserConfig() {
+        try {
+            const saved = localStorage.getItem('bookvibe_user_config');
+            if (saved) {
+                return JSON.parse(saved);
+            }
+        } catch (e) {
+            console.warn('无法读取用户配置:', e);
+        }
+        return {};
+    }
+    
+    /**
+     * 显示配置弹窗
+     */
+    showConfigModal() {
+        console.log('🔧 showConfigModal 被调用');
+        if (!this.configModal) {
+            console.error('❌ 配置弹窗元素未找到');
+            return;
+        }
+        
+        // 加载当前配置到表单
+        this.loadConfigToForm();
+        
+        this.configModal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+        console.log('✅ 配置弹窗已显示');
+    }
+    
+    /**
+     * 隐藏配置弹窗
+     */
+    hideConfigModal() {
+        if (!this.configModal) return;
+        this.configModal.classList.add('hidden');
+        document.body.style.overflow = '';
+    }
+    
+    /**
+     * 加载配置到表单
+     */
+    loadConfigToForm() {
+        const userConfig = this.getUserConfig();
+        // 合并配置：用户配置 > config.js > 默认值
+        const config = { ...CONFIG };
+        if (window.BOOKVIBE_CONFIG) {
+            Object.assign(config, window.BOOKVIBE_CONFIG);
+        }
+        Object.assign(config, userConfig);
+        
+        // LLM 配置
+        const llmApiKeyInput = document.getElementById('config-llm-api-key');
+        const llmModelSelect = document.getElementById('config-llm-model');
+        const llmApiUrlInput = document.getElementById('config-llm-api-url');
+        
+        if (llmApiKeyInput) llmApiKeyInput.value = config.LLM_API_KEY || '';
+        if (llmModelSelect) llmModelSelect.value = config.LLM_MODEL || 'GLM-4';
+        if (llmApiUrlInput) {
+            llmApiUrlInput.value = config.LLM_API_URL || 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+            if (!llmApiUrlInput.value) {
+                llmApiUrlInput.placeholder = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+            }
+        }
+        
+        // AIGC 配置
+        const aigcApiKeyInput = document.getElementById('config-aigc-api-key');
+        const aigcApiTypeSelect = document.getElementById('config-aigc-api-type');
+        const aigcApiUrlInput = document.getElementById('config-aigc-api-url');
+        const aigcModelInput = document.getElementById('config-aigc-model');
+        
+        if (aigcApiKeyInput) aigcApiKeyInput.value = config.AIGC_API_KEY || '';
+        if (aigcApiTypeSelect) {
+            aigcApiTypeSelect.value = (config.AIGC_API_TYPE || 'modelscope').toLowerCase();
+        }
+        if (aigcApiUrlInput) {
+            aigcApiUrlInput.value = config.AIGC_API_URL || '';
+            if (!aigcApiUrlInput.value && config.AIGC_API_TYPE === 'modelscope') {
+                aigcApiUrlInput.placeholder = 'https://api-inference.modelscope.cn/v1/images/generations';
+            } else if (!aigcApiUrlInput.value && config.AIGC_API_TYPE === 'openai') {
+                aigcApiUrlInput.placeholder = 'https://api.openai.com/v1/images/generations';
+            }
+        }
+        if (aigcModelInput) {
+            aigcModelInput.value = config.AIGC_MODEL || '';
+            if (!aigcModelInput.value && config.AIGC_API_TYPE === 'modelscope') {
+                aigcModelInput.placeholder = 'Tongyi-MAI/Z-Image-Turbo';
+            } else if (!aigcModelInput.value && config.AIGC_API_TYPE === 'openai') {
+                aigcModelInput.placeholder = 'dall-e-3';
+            }
+        }
+        
+        // 图片搜索配置
+        const imageApiTypeSelect = document.getElementById('config-image-api-type');
+        const pexelsApiKeyInput = document.getElementById('config-pexels-api-key');
+        const unsplashApiKeyInput = document.getElementById('config-unsplash-api-key');
+        
+        if (imageApiTypeSelect) imageApiTypeSelect.value = (config.IMAGE_API_TYPE || 'picsum').toLowerCase();
+        if (pexelsApiKeyInput) pexelsApiKeyInput.value = config.PEXELS_API_KEY || '';
+        if (unsplashApiKeyInput) unsplashApiKeyInput.value = config.UNSPLASH_API_KEY || '';
+    }
+    
+    /**
+     * 保存配置
+     */
+    saveConfig() {
+        // 收集表单数据
+        const config = {
+            LLM_API_KEY: document.getElementById('config-llm-api-key')?.value.trim() || '',
+            LLM_MODEL: document.getElementById('config-llm-model')?.value || 'GLM-4',
+            LLM_API_URL: document.getElementById('config-llm-api-url')?.value.trim() || 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+            AIGC_API_KEY: document.getElementById('config-aigc-api-key')?.value.trim() || '',
+            AIGC_API_TYPE: document.getElementById('config-aigc-api-type')?.value || 'modelscope',
+            AIGC_API_URL: document.getElementById('config-aigc-api-url')?.value.trim() || '',
+            AIGC_MODEL: document.getElementById('config-aigc-model')?.value.trim() || '',
+            IMAGE_API_TYPE: document.getElementById('config-image-api-type')?.value || 'picsum',
+            PEXELS_API_KEY: document.getElementById('config-pexels-api-key')?.value.trim() || '',
+            UNSPLASH_API_KEY: document.getElementById('config-unsplash-api-key')?.value.trim() || '',
+        };
+        
+        // 验证必需配置
+        if (!config.LLM_API_KEY) {
+            alert('请至少配置 LLM API Key（必需项）');
+            return;
+        }
+        
+        // 保存配置
+        if (this.saveUserConfig(config)) {
+            alert('配置已保存！页面将刷新以应用新配置。');
+            this.hideConfigModal();
+            // 刷新页面以应用新配置
+            setTimeout(() => {
+                window.location.reload();
+            }, 500);
+        } else {
+            alert('保存配置失败，请检查浏览器控制台');
+        }
+    }
+    
+    /**
+     * 重置配置
+     */
+    resetConfig() {
+        if (confirm('确定要重置所有配置吗？这将清除所有已保存的 API Keys。')) {
+            try {
+                localStorage.removeItem('bookvibe_user_config');
+                // 清空表单
+                this.loadConfigToForm();
+                alert('配置已重置');
+            } catch (e) {
+                console.error('重置配置失败:', e);
+                alert('重置配置失败');
+            }
         }
     }
 }

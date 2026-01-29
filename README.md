@@ -28,6 +28,8 @@
 - **虚构地点标签**：紫色标签，可点击生成 AI 图片
 
 ### ⚙️ 用户自定义配置
+- **界面配置**：点击右上角设置按钮，通过友好的界面配置 API keys（v2.1 新增）
+- **配置存储**：配置保存在浏览器 localStorage，刷新后仍然有效
 - **付费 API 需用户配置**：LLM 和 AIGC API 需要用户自己配置 API keys
 - **免费图片源**：默认使用 Picsum Photos（无需配置）
 
@@ -35,10 +37,17 @@
 
 ### 1. 配置 API Keys（必需）
 
-编辑 `bookvibe/app.js` 或创建 `config.js`：
+**方式一：通过界面配置（推荐）**
+- 打开页面后，点击右上角的**设置按钮**（齿轮图标）
+- 在配置弹窗中填入你的 API Keys
+- 点击"保存配置"，配置会自动保存到浏览器本地存储
+
+**方式二：通过配置文件（开发环境）**
+
+编辑 `config.js`：
 
 ```javascript
-const CONFIG = {
+window.BOOKVIBE_CONFIG = {
     // 必需：LLM API Key（用于提取地点和原文）
     LLM_API_KEY: "your-llm-api-key",
     
@@ -50,6 +59,8 @@ const CONFIG = {
     UNSPLASH_API_KEY: "your-unsplash-key",
 };
 ```
+
+**配置优先级**：界面配置（localStorage）> config.js > 默认值
 
 ### 2. 获取 API Keys
 
@@ -139,6 +150,17 @@ const CONFIG = {
 
 ## 📝 API 配置说明
 
+### 配置方式
+
+**推荐方式：通过界面配置**
+1. 打开页面
+2. 点击右上角设置按钮（齿轮图标）
+3. 在配置弹窗中填入 API Keys
+4. 点击"保存配置"
+
+**开发方式：通过 config.js**
+编辑 `config.js` 文件，填入 API Keys
+
 ### 必需配置
 
 ```javascript
@@ -157,6 +179,13 @@ UNSPLASH_API_KEY: "your-key"  // 图片搜索（可选）
 
 - **图片搜索**：使用 `IMAGE_API_TYPE: "picsum"`（无需配置）
 - **LLM API**：需要付费 API（OpenAI / GLM-4.7 等）
+- **AIGC API**：不配置时自动使用免费的 Pollinations.ai 服务
+
+### 配置存储
+
+- **界面配置**：保存在浏览器 localStorage，刷新后仍然有效
+- **配置文件**：保存在 `config.js`，适合开发环境
+- **优先级**：localStorage > config.js > 默认值
 
 ## 🌐 部署
 
@@ -216,11 +245,13 @@ MIT License
 - ✨ **打卡功能**：标记打卡状态，添加旅行笔记
 - ✨ **地点知识**：可折叠的地点小知识和打卡小贴士
 - ✨ **地点推荐**：智能推荐同氛围感的地点组合
+- ✨ **用户配置界面**：友好的配置界面，无需修改代码文件（v2.1.1）
 
 ### 优化改进
 - 🔧 **模式切换**：一键切换作品模式和地点模式
 - 🔧 **数据清理**：切换模式时自动清理之前的结果
 - 🔧 **UI 优化**：地点模式专属的 UI 和交互
+- 🔧 **配置管理**：配置保存在 localStorage，支持界面配置和重置
 
 ---
 
