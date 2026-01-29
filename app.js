@@ -224,18 +224,58 @@ class BookVibe {
             toggleDebugBtn.addEventListener('click', () => this.toggleDebugInfo());
         }
         
-        // 配置界面
-        if (this.settingsBtn) {
-            console.log('✅ 设置按钮已找到，绑定点击事件');
-            this.settingsBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                console.log('🔧 设置按钮被点击');
-                this.showConfigModal();
-            });
-        } else {
-            console.warn('⚠️ 设置按钮未找到，ID: settings-btn');
-        }
+        // 配置界面（延迟绑定，确保 DOM 完全加载）
+        setTimeout(() => {
+            // 重新获取元素，确保在生产环境中也能找到
+            if (!this.settingsBtn) {
+                this.settingsBtn = document.getElementById('settings-btn');
+            }
+            if (!this.configModal) {
+                this.configModal = document.getElementById('config-modal');
+            }
+            if (!this.configCloseBtn) {
+                this.configCloseBtn = document.getElementById('config-close-btn');
+            }
+            if (!this.configSaveBtn) {
+                this.configSaveBtn = document.getElementById('config-save-btn');
+            }
+            if (!this.configResetBtn) {
+                this.configResetBtn = document.getElementById('config-reset-btn');
+            }
+            
+            if (this.settingsBtn) {
+                // 移除旧的事件监听器（如果存在）
+                const newSettingsBtn = this.settingsBtn.cloneNode(true);
+                this.settingsBtn.parentNode.replaceChild(newSettingsBtn, this.settingsBtn);
+                this.settingsBtn = newSettingsBtn;
+                
+                this.settingsBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('🔧 设置按钮被点击');
+                    this.showConfigModal();
+                });
+            } else {
+                console.warn('⚠️ 设置按钮未找到，ID: settings-btn');
+            }
+            
+            if (this.configCloseBtn) {
+                this.configCloseBtn.addEventListener('click', () => this.hideConfigModal());
+            }
+            if (this.configModal) {
+                this.configModal.addEventListener('click', (e) => {
+                    if (e.target === this.configModal || e.target.classList.contains('config-modal-overlay')) {
+                        this.hideConfigModal();
+                    }
+                });
+            }
+            if (this.configSaveBtn) {
+                this.configSaveBtn.addEventListener('click', () => this.saveConfig());
+            }
+            if (this.configResetBtn) {
+                this.configResetBtn.addEventListener('click', () => this.resetConfig());
+            }
+        }, 100);
         if (this.configCloseBtn) {
             this.configCloseBtn.addEventListener('click', () => this.hideConfigModal());
         }
@@ -2936,6 +2976,73 @@ ${isMultiple ? '[' : ''}
     }
     
     /**
+     * 显示配置提示
+     */
+    showConfigPrompt() {
+        // 延迟显示，确保 DOM 已加载
+        setTimeout(() => {
+            // 检查是否已经显示过提示
+            if (document.getElementById('config-prompt')) {
+                return;
+            }
+            
+            const prompt = document.createElement('div');
+            prompt.id = 'config-prompt';
+            prompt.style.cssText = `
+                position: fixed;
+                top: 80px;
+                right: 24px;
+                background: #FEF3C7;
+                border: 1px solid #FCD34D;
+                border-radius: 8px;
+                padding: 16px 20px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                z-index: 99;
+                max-width: 300px;
+                font-family: var(--serif-body);
+                font-size: 14px;
+                color: #92400E;
+            `;
+            prompt.innerHTML = `
+                <div style="display: flex; align-items: flex-start; gap: 12px;">
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600; margin-bottom: 4px;">需要配置 API Key</div>
+                        <div style="font-size: 12px; opacity: 0.8;">请点击右上角设置按钮配置 LLM API Key</div>
+                    </div>
+                    <button id="config-prompt-close" style="background: none; border: none; color: #92400E; cursor: pointer; font-size: 18px; line-height: 1;">×</button>
+                </div>
+            `;
+            
+            document.body.appendChild(prompt);
+            
+            // 关闭按钮
+            const closeBtn = document.getElementById('config-prompt-close');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', () => {
+                    prompt.remove();
+                });
+            }
+            
+            // 点击提示打开配置界面
+            prompt.style.cursor = 'pointer';
+            prompt.addEventListener('click', (e) => {
+                if (e.target !== closeBtn && e.target.id !== 'config-prompt-close') {
+                    this.showConfigModal();
+                }
+            });
+            
+            // 5秒后自动隐藏
+            setTimeout(() => {
+                if (prompt.parentNode) {
+                    prompt.style.opacity = '0';
+                    prompt.style.transition = 'opacity 0.3s ease';
+                    setTimeout(() => prompt.remove(), 300);
+                }
+            }, 5000);
+        }, 500);
+    }
+    
+    /**
      * 渲染作品分栏（地点模式）
      */
     renderWorksGrid(cardData) {
@@ -3205,10 +3312,36 @@ ${isMultiple ? '[' : ''}
      * 显示配置弹窗
      */
     showConfigModal() {
-        console.log('🔧 showConfigModal 被调用');
         if (!this.configModal) {
-            console.error('❌ 配置弹窗元素未找到');
-            return;
+            // 如果弹窗元素不存在，尝试重新获取
+            this.configModal = document.getElementById('config-modal');
+            this.configCloseBtn = document.getElementById('config-close-btn');
+            this.configSaveBtn = document.getElementById('config-save-btn');
+            this.configResetBtn = document.getElementById('config-reset-btn');
+            
+            if (!this.configModal) {
+                console.error('❌ 配置弹窗元素未找到');
+                alert('配置界面未加载，请刷新页面重试');
+                return;
+            }
+            
+            // 重新绑定事件
+            if (this.configCloseBtn) {
+                this.configCloseBtn.addEventListener('click', () => this.hideConfigModal());
+            }
+            if (this.configModal) {
+                this.configModal.addEventListener('click', (e) => {
+                    if (e.target === this.configModal || e.target.classList.contains('config-modal-overlay')) {
+                        this.hideConfigModal();
+                    }
+                });
+            }
+            if (this.configSaveBtn) {
+                this.configSaveBtn.addEventListener('click', () => this.saveConfig());
+            }
+            if (this.configResetBtn) {
+                this.configResetBtn.addEventListener('click', () => this.resetConfig());
+            }
         }
         
         // 加载当前配置到表单
@@ -3216,7 +3349,6 @@ ${isMultiple ? '[' : ''}
         
         this.configModal.classList.remove('hidden');
         document.body.style.overflow = 'hidden';
-        console.log('✅ 配置弹窗已显示');
     }
     
     /**

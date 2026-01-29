@@ -1582,6 +1582,12 @@
     
     <!-- 配置文件（在 app.js 之前引入，以便覆盖默认配置） -->
     <script src="config.js"></script>
+    <script>
+        // 如果 config.js 加载失败，创建一个空的配置对象
+        if (typeof window.BOOKVIBE_CONFIG === 'undefined') {
+            window.BOOKVIBE_CONFIG = {};
+        }
+    </script>
     
     <script src="app.js"></script>
 </body>
