@@ -38,6 +38,8 @@ class BookVibe {
         this.cardsData = []; // 所有卡片数据
         this.currentIndex = 0; // 当前显示的卡片索引
         this.isSwitching = false; // 是否正在切换
+        this.currentMode = 'book'; // 当前模式：'book' 或 'place'
+        this.checkinStatus = {}; // 打卡状态 {location: {checked: bool, note: string}}
         
         // 合并用户配置（config.js 中的配置会覆盖默认值）
         if (window.BOOKVIBE_CONFIG) {
@@ -70,6 +72,9 @@ class BookVibe {
         
         // 检查必要的 API 配置
         this.checkAPIConfig();
+        
+        // 加载打卡状态
+        this.loadCheckinStatus();
         
         this.init();
     }
@@ -143,6 +148,17 @@ class BookVibe {
         this.mainCard = document.getElementById('main-card');
         this.filmstrip = document.getElementById('filmstrip');
         
+        // 模式切换按钮
+        this.modeBookBtn = document.getElementById('mode-book');
+        this.modePlaceBtn = document.getElementById('mode-place');
+        
+        // 地点模式相关元素
+        this.worksGridContainer = document.getElementById('works-grid-container');
+        this.quoteSectionBookMode = document.getElementById('quote-section-book-mode');
+        this.filterButtons = document.getElementById('filter-buttons');
+        this.checkinBtn = document.getElementById('checkin-btn');
+        this.noteBtn = document.getElementById('note-btn');
+        
         // 事件监听
         this.submitBtn.addEventListener('click', () => this.handleSubmit());
         this.bookInput.addEventListener('keypress', (e) => {
@@ -152,6 +168,41 @@ class BookVibe {
         this.backBtn.addEventListener('click', () => this.reset());
         this.prevBtn.addEventListener('click', () => this.prevCard());
         this.nextBtn.addEventListener('click', () => this.nextCard());
+        
+        // 模式切换
+        if (this.modeBookBtn) {
+            this.modeBookBtn.addEventListener('click', () => this.switchMode('book'));
+        }
+        if (this.modePlaceBtn) {
+            this.modePlaceBtn.addEventListener('click', () => this.switchMode('place'));
+        }
+        
+        // 地点模式功能
+        if (this.filterButtons) {
+            this.filterButtons.addEventListener('click', (e) => {
+                if (e.target.classList.contains('filter-btn')) {
+                    this.handleFilter(e.target.dataset.filter);
+                }
+            });
+        }
+        
+        // 可折叠信息
+        const expandKnowledge = document.getElementById('expand-knowledge');
+        const expandTips = document.getElementById('expand-tips');
+        if (expandKnowledge) {
+            expandKnowledge.addEventListener('click', () => this.toggleExpand('knowledge'));
+        }
+        if (expandTips) {
+            expandTips.addEventListener('click', () => this.toggleExpand('tips'));
+        }
+        
+        // 打卡和笔记
+        if (this.checkinBtn) {
+            this.checkinBtn.addEventListener('click', () => this.toggleCheckin());
+        }
+        if (this.noteBtn) {
+            this.noteBtn.addEventListener('click', () => this.showNoteDialog());
+        }
         
         // 调试信息切换按钮
         const toggleDebugBtn = document.getElementById('toggle-debug-btn');
@@ -176,11 +227,121 @@ class BookVibe {
         this.bookInput.focus();
     }
     
-    async handleSubmit() {
-        const bookName = this.bookInput.value.trim();
+    /**
+     * 切换模式
+     */
+    switchMode(mode) {
+        // 如果模式没有变化，不执行任何操作
+        if (this.currentMode === mode) return;
         
-        if (!bookName) {
-            this.showError('请输入书名');
+        // 清理之前的数据和UI
+        this.clearPreviousResults();
+        
+        this.currentMode = mode;
+        
+        // 更新按钮状态
+        if (this.modeBookBtn && this.modePlaceBtn) {
+            if (mode === 'book') {
+                this.modeBookBtn.classList.add('active');
+                this.modePlaceBtn.classList.remove('active');
+                if (this.bookInput) {
+                    this.bookInput.placeholder = '输入书名，如《挪威的森林》';
+                }
+            } else {
+                this.modeBookBtn.classList.remove('active');
+                this.modePlaceBtn.classList.add('active');
+                if (this.bookInput) {
+                    this.bookInput.placeholder = '输入地点，如"大理"或"大理,丽江,香格里拉"';
+                }
+            }
+        }
+        
+        // 切换模式时回到输入界面
+        this.showInput();
+    }
+    
+    /**
+     * 清理之前的结果数据
+     */
+    clearPreviousResults() {
+        // 清理数据
+        this.cardsData = [];
+        this.currentIndex = 0;
+        this.isSwitching = false;
+        
+        // 清理胶卷带
+        if (this.filmstrip) {
+            this.filmstrip.innerHTML = '';
+        }
+        
+        // 清理主卡片内容
+        const locationBadge = document.getElementById('location-badge');
+        const locationTitle = document.getElementById('location-title');
+        const quoteTextMain = document.getElementById('quote-text-main');
+        const quoteSource = document.getElementById('quote-source');
+        const mainCardImage = document.getElementById('main-card-image');
+        
+        if (locationBadge) locationBadge.textContent = '';
+        if (locationTitle) locationTitle.textContent = '';
+        if (quoteTextMain) quoteTextMain.textContent = '';
+        if (quoteSource) quoteSource.textContent = '';
+        if (mainCardImage) {
+            mainCardImage.style.backgroundImage = '';
+        }
+        
+        // 清理作品网格（地点模式）
+        const worksGrid = document.getElementById('works-grid');
+        if (worksGrid) {
+            worksGrid.innerHTML = '';
+        }
+        
+        // 隐藏地点模式相关元素
+        if (this.worksGridContainer) {
+            this.worksGridContainer.classList.add('hidden');
+        }
+        if (this.quoteSectionBookMode) {
+            this.quoteSectionBookMode.classList.remove('hidden');
+        }
+        
+        // 隐藏所有操作按钮
+        const googleBtn = document.getElementById('google-search-btn');
+        if (googleBtn) googleBtn.classList.add('hidden');
+        if (this.checkinBtn) this.checkinBtn.classList.add('hidden');
+        if (this.noteBtn) this.noteBtn.classList.add('hidden');
+        
+        // 重置筛选按钮
+        if (this.filterButtons) {
+            const filterBtns = this.filterButtons.querySelectorAll('.filter-btn');
+            filterBtns.forEach(btn => {
+                if (btn.dataset.filter === 'all') {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+        
+        // 重置可折叠内容
+        const knowledgeContent = document.getElementById('knowledge-content');
+        const tipsContent = document.getElementById('tips-content');
+        if (knowledgeContent) {
+            knowledgeContent.textContent = '';
+            knowledgeContent.classList.remove('expanded');
+        }
+        if (tipsContent) {
+            tipsContent.textContent = '';
+            tipsContent.classList.remove('expanded');
+        }
+        
+        // 更新计数器
+        this.updateCounter();
+    }
+    
+    async handleSubmit() {
+        const inputValue = this.bookInput.value.trim();
+        
+        if (!inputValue) {
+            this.showError(this.currentMode === 'book' ? '请输入书名' : '请输入地点');
             return;
         }
         
@@ -188,12 +349,17 @@ class BookVibe {
         this.showLoading();
         
         try {
-            // 流式获取数据并显示
-            await this.fetchBookDataStreaming(bookName);
+            if (this.currentMode === 'book') {
+                // 作品模式：原有逻辑
+                await this.fetchBookDataStreaming(inputValue);
+            } else {
+                // 地点模式：新逻辑
+                await this.fetchPlaceDataStreaming(inputValue);
+            }
             
         } catch (error) {
             console.error('Error:', error);
-            this.showError(error.message || '这本书太神秘，我们的旅行家迷路了。');
+            this.showError(error.message || (this.currentMode === 'book' ? '这本书太神秘，我们的旅行家迷路了。' : '这个地方太神秘，我们的旅行家迷路了。'));
             this.showInput();
         }
     }
@@ -203,6 +369,9 @@ class BookVibe {
      */
     async fetchBookDataStreaming(bookName) {
         try {
+            // 清理之前的结果
+            this.clearPreviousResults();
+            
             // Step 1: 调用 GLM API 提取多个地点和金句
             this.updateLoadingStatus('正在分析书籍内容...', 10);
             const placesData = await this.callGLMAPI(bookName);
@@ -438,6 +607,256 @@ class BookVibe {
             
         } catch (error) {
             throw error;
+        }
+    }
+    
+    /**
+     * 地点驱动的数据获取（流式）
+     */
+    async fetchPlaceDataStreaming(placeInput) {
+        try {
+            // 清理之前的结果
+            this.clearPreviousResults();
+            
+            // 解析输入：单地点或多地点
+            const places = placeInput.split(/[,，]/).map(p => p.trim()).filter(p => p);
+            
+            if (places.length === 0) {
+                throw new Error('请输入有效的地点');
+            }
+            
+            // Step 1: 调用 LLM API 提取地点相关作品和quote
+            this.updateLoadingStatus('正在分析地点故事...', 10);
+            const placesData = await this.callPlaceGLMAPI(places);
+            
+            if (!placesData || !Array.isArray(placesData) || placesData.length === 0) {
+                throw new Error('未提取到地点数据');
+            }
+            
+            // LLM 生成完成，立即切换到结果界面
+            this.loadingScreen.classList.add('hidden');
+            
+            // 立即创建所有地点的卡片数据（先不包含图片URL，后续会更新）
+            const cardsData = placesData.map((place, i) => ({
+                location: place.location,
+                locationEn: place.locationEn || place.location,
+                type: 'real', // 地点模式默认都是真实地点
+                works: place.works || [], // Top3作品列表
+                imageQuery: place.imageQuery || `${place.locationEn || place.location} atmospheric cinematic`,
+                imageUrl: '', // 图片URL稍后更新
+                knowledge: place.knowledge || '', // 地点小知识
+                tips: place.tips || '', // 打卡小贴士
+                recommendedPlaces: place.recommendedPlaces || null, // 推荐地点组合
+                mode: 'place' // 标记为地点模式
+            }));
+            
+            // 立即显示结果界面
+            this.showResult(cardsData, true);
+            
+            // 在 filmstrip 中为所有地点创建占位符
+            placesData.forEach((place, i) => {
+                this.addFilmstripPlaceholder(place, i);
+            });
+            
+            // Step 2: 并行处理所有地点的图片搜索
+            const imagePromises = placesData.map(async (place, i) => {
+                const imageQuery = place.imageQuery || `${place.locationEn || place.location} atmospheric cinematic`;
+                const cardData = cardsData[i];
+                
+                try {
+                    this.updateFilmstripPlaceholderStatus(i, '搜索图片中...');
+                    const imageUrl = await this.searchImage(imageQuery);
+                    this.updateFilmstripPlaceholderStatus(i, '加载中...');
+                    cardData.imageUrl = imageUrl;
+                    this.updateFilmstripItem(cardData, i);
+                    if (this.currentIndex === i) {
+                        this.updateMainCard();
+                    }
+                } catch (error) {
+                    console.warn(`⚠️ [${place.location}] 搜图失败，使用备用图片:`, error);
+                    this.updateFilmstripPlaceholderStatus(i, '加载失败');
+                    const imageUrl = this.getFallbackImage(imageQuery);
+                    cardData.imageUrl = imageUrl;
+                    this.updateFilmstripItem(cardData, i);
+                    if (this.currentIndex === i) {
+                        this.updateMainCard();
+                    }
+                }
+                
+                return cardData;
+            });
+            
+            await Promise.allSettled(imagePromises);
+            
+            const finalCardsData = cardsData.filter(card => card !== undefined);
+            this.cardsData = finalCardsData;
+            if (this.currentIndex >= finalCardsData.length) {
+                this.currentIndex = 0;
+            }
+            this.updateMainCard();
+            this.updateFilmstripActive();
+            this.updateCounter();
+            
+            this.currentData = finalCardsData;
+            return finalCardsData;
+            
+        } catch (error) {
+            throw error;
+        }
+    }
+    
+    /**
+     * 调用 LLM API 从地点提取相关作品和quote
+     */
+    async callPlaceGLMAPI(places) {
+        if (!CONFIG.LLM_API_KEY) {
+            throw new Error('LLM_API_KEY 未配置，请在 config.js 中配置你的 API key');
+        }
+        
+        const isMultiple = places.length > 1;
+        const placesStr = places.join('、');
+        
+        // 如果是单个地点，询问是否推荐相关地点组合
+        let recommendPrompt = '';
+        if (!isMultiple) {
+            recommendPrompt = `\n8. 如果该地点有同氛围感的相关地点组合（如"大理"可推荐"大理+丽江+香格里拉"），请在返回的JSON中添加"recommendedPlaces"字段，值为推荐的地点名称数组（最多3个），如果没有则不添加此字段。`;
+        }
+        
+        const prompt = `你是一位文学评论家和旅行家。请为${isMultiple ? '以下地点' : '地点"'}${placesStr}${isMultiple ? '"' : ''}，完成以下要求，严格按照JSON格式返回，不要任何多余文字：
+
+1. ${isMultiple ? '为每个地点' : ''}识别与该地点相关的**Top3作品**（可以是书籍、电影、诗词、散文等），按「经典度 + 贴合度」分层：
+   - Top1：国民级经典（如北京故宫→《故宫博物院》课文/《我在故宫修文物》）
+   - Top2：文艺向经典（如厦门鼓浪屿→舒婷的诗词）
+   - Top3：小众宝藏（如某小众古镇→当地作家的散文）
+2. 为每个作品从原文中quote一段描写该地点或体现该地点情绪的**原文段落**（中文作品用中文，英文作品用英文，50-100字）
+3. 为每个作品标注类型：poetry（诗词）、prose（散文）、novel（小说）、movie（电影）
+4. 为每个作品标注quote风格：healing（治愈）、bold（豪迈）、literary（文艺）、niche（小众）
+5. 生成用于搜索最符合该地点特色的图片搜索关键词（外国地点用英文，中国地点用中文）
+6. 提供地点小知识（quote的创作背景等，50-100字）
+7. 提供打卡小贴士（最佳拍摄时间、角度等，30-50字）${recommendPrompt}
+
+${isMultiple ? '以 JSON 数组格式返回，每个地点一个对象：' : '以 JSON 对象格式返回：'}
+${isMultiple ? '[' : ''}
+{
+    "location": "${isMultiple ? '地点中文名' : places[0]}",
+    "locationEn": "${isMultiple ? '地点英文名' : places[0]}",
+    "works": [
+        {
+            "title": "作品1名称",
+            "author": "作者/导演名",
+            "type": "poetry|prose|novel|movie",
+            "quote": "原文段落（50-100字）",
+            "quoteStyle": "healing|bold|literary|niche",
+            "tier": 1
+        },
+        {
+            "title": "作品2名称",
+            "author": "作者/导演名",
+            "type": "poetry|prose|novel|movie",
+            "quote": "原文段落（50-100字）",
+            "quoteStyle": "healing|bold|literary|niche",
+            "tier": 2
+        },
+        {
+            "title": "作品3名称",
+            "author": "作者/导演名",
+            "type": "poetry|prose|novel|movie",
+            "quote": "原文段落（50-100字）",
+            "quoteStyle": "healing|bold|literary|niche",
+            "tier": 3
+        }
+    ],
+    "imageQuery": "搜索关键词",
+    "knowledge": "地点小知识（50-100字）",
+    "tips": "打卡小贴士（30-50字）"${!isMultiple ? ',\n    "recommendedPlaces": ["相关地点1", "相关地点2"] // 可选，同氛围感的地点组合' : ''}
+}${isMultiple ? ', ...]' : ''}
+
+如果地点不存在或无法识别，返回空数组 []`;
+
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+        
+        if (CONFIG.LLM_API_URL.includes('bigmodel.cn')) {
+            headers['Authorization'] = `Bearer ${CONFIG.LLM_API_KEY}`;
+        } else {
+            headers['Authorization'] = `Bearer ${CONFIG.LLM_API_KEY}`;
+        }
+        
+        console.log('调用地点模式 LLM API:', {
+            url: CONFIG.LLM_API_URL,
+            model: CONFIG.LLM_MODEL,
+            places: places
+        });
+        
+        const response = await fetch(CONFIG.LLM_API_URL, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                model: CONFIG.LLM_MODEL,
+                messages: [
+                    {
+                        role: 'system',
+                        content: '你是一位专业的文学评论家和旅行家，擅长从地点提取相关作品和经典句子。请严格按照JSON格式返回，不要任何多余文字。'
+                    },
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                temperature: 0.7,
+                max_tokens: 3000
+            })
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error?.message || `LLM API 请求失败: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        let content;
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+            content = data.choices[0].message.content.trim();
+        } else if (data.data && data.data.choices && data.data.choices[0]) {
+            content = data.data.choices[0].message.content.trim();
+        } else if (typeof data === 'string') {
+            content = data.trim();
+        } else {
+            console.error('API 响应格式异常:', data);
+            throw new Error('API 返回格式不正确，请检查 API 配置');
+        }
+        
+        let jsonStr = content;
+        if (content.includes('```json')) {
+            const match = content.match(/```json\n([\s\S]*?)\n```/);
+            if (match) jsonStr = match[1];
+        } else if (content.includes('```')) {
+            const match = content.match(/```\n([\s\S]*?)\n```/);
+            if (match) jsonStr = match[1];
+        }
+        
+        jsonStr = jsonStr.trim();
+        if (jsonStr.startsWith('"') && jsonStr.endsWith('"')) {
+            jsonStr = JSON.parse(jsonStr);
+        }
+        
+        jsonStr = this.fixJSONString(jsonStr);
+        
+        try {
+            const result = JSON.parse(jsonStr);
+            
+            // 确保返回数组格式
+            if (!Array.isArray(result)) {
+                return [result];
+            }
+            
+            return result;
+        } catch (error) {
+            console.error('JSON 解析失败:', error);
+            console.error('原始内容前500字符:', content.substring(0, 500));
+            throw new Error(`JSON解析失败: ${error.message}。请检查API返回的格式是否正确。`);
         }
     }
     
@@ -698,8 +1117,9 @@ class BookVibe {
 3. 为每个地点从作品（书籍-原文/电影-台词）中quote一段描写该地点或体现该地点情绪的**原文段落**（中文书籍用中文，英文书籍用英文，80-150字）
 4. 根据地点类型（真实/虚拟），真实地点则生成用于搜索最符合该POI特色的图片搜索关键词（外国作品，用英文搜索词，中国作品，则用中文搜索词）；虚拟地点，则生成用于AI生图的提示词（提示词充分反映地点画面、特征、氛围、情绪等）；
 5. 要求地点不能重复、细节深入一点、不要出现太大颗粒度（现市、国家）信息、越多越好
+6. 地点顺序排列，贴合作品的逻辑：比如游记类作品按「行程顺序」排，诗歌 / 散文按「意象递进」排，小说按「情节场景」排序
 
-请以 JSON 数组格式返回：
+以 JSON 数组格式返回：
 [
     {
         "location": "地点1中文名",
@@ -1158,6 +1578,8 @@ class BookVibe {
         // 如果是流式模式且结果界面已显示，不重复隐藏加载界面
         if (!isStreaming) {
             this.loadingScreen.classList.add('hidden');
+            // 非流式模式时，清理之前的结果
+            this.clearPreviousResults();
         }
         this.resultScreen.classList.remove('hidden');
         
@@ -1253,7 +1675,8 @@ class BookVibe {
         
         // 根据地点类型确定加载状态文本
         const locationType = place.type || 'real';
-        const statusText = locationType === 'fictional' ? '生成中...' : '搜索中...';
+        const isPlaceMode = place.mode === 'place';
+        const statusText = isPlaceMode ? '搜索中...' : (locationType === 'fictional' ? '生成中...' : '搜索中...');
         
         // 创建加载占位符
         const placeholder = document.createElement('div');
@@ -1531,9 +1954,15 @@ class BookVibe {
         document.getElementById('location-badge').textContent = cardData.locationEn || cardData.location;
         document.getElementById('location-title').textContent = cardData.location;
         
+        // 判断模式
+        const isPlaceMode = cardData.mode === 'place';
+        
         // 更新地点类型标签
         const typeBadge = document.getElementById('location-type-badge');
-        if (isReal) {
+        if (isPlaceMode) {
+            typeBadge.textContent = '真实地点';
+            typeBadge.className = 'location-type-badge real';
+        } else if (isReal) {
             typeBadge.textContent = '真实地点';
             typeBadge.className = 'location-type-badge real';
         } else {
@@ -1541,24 +1970,53 @@ class BookVibe {
             typeBadge.className = 'location-type-badge fictional';
         }
         
-        // 更新 Quote
-        document.getElementById('quote-text-main').textContent = cardData.quote;
-        document.getElementById('quote-source').textContent = `—— 《${cardData.bookTitle}》`;
+        // 根据模式显示不同内容
+        if (isPlaceMode) {
+            // 地点模式：显示作品分栏
+            this.quoteSectionBookMode.classList.add('hidden');
+            if (this.worksGridContainer) {
+                this.worksGridContainer.classList.remove('hidden');
+            }
+            this.renderWorksGrid(cardData);
+            this.updatePlaceModeInfo(cardData);
+        } else {
+            // 作品模式：显示原有quote
+            if (this.worksGridContainer) {
+                this.worksGridContainer.classList.add('hidden');
+            }
+            this.quoteSectionBookMode.classList.remove('hidden');
+            document.getElementById('quote-text-main').textContent = cardData.quote || '';
+            document.getElementById('quote-source').textContent = cardData.bookTitle ? `—— 《${cardData.bookTitle}》` : '';
+        }
         
         // 更新调试信息
         this.updateDebugInfo(cardData);
         
-        // 更新操作按钮（仅真实地点显示谷歌搜索按钮）
+        // 更新操作按钮
         const googleBtn = document.getElementById('google-search-btn');
         const aigcBtn = document.getElementById('aigc-generate-btn');
         
-        if (isReal) {
-            // 真实地点：显示谷歌搜索按钮
-            googleBtn.classList.remove('hidden');
-            googleBtn.href = `https://www.google.com/search?q=${encodeURIComponent(cardData.locationEn || cardData.location)}`;
-        } else {
-            // 虚构地点：隐藏所有操作按钮（AI生图已自动完成，无需手动生成）
+        if (isPlaceMode) {
+            // 地点模式：显示打卡和笔记按钮
             googleBtn.classList.add('hidden');
+            if (this.checkinBtn) {
+                this.checkinBtn.classList.remove('hidden');
+                this.updateCheckinButton(cardData);
+            }
+            if (this.noteBtn) {
+                this.noteBtn.classList.remove('hidden');
+            }
+        } else {
+            // 作品模式：显示谷歌搜索按钮（仅真实地点）
+            if (this.checkinBtn) this.checkinBtn.classList.add('hidden');
+            if (this.noteBtn) this.noteBtn.classList.add('hidden');
+            
+            if (isReal) {
+                googleBtn.classList.remove('hidden');
+                googleBtn.href = `https://www.google.com/search?q=${encodeURIComponent(cardData.locationEn || cardData.location)}`;
+            } else {
+                googleBtn.classList.add('hidden');
+            }
         }
         
         // 始终隐藏AI生成按钮（已移除该功能）
@@ -2165,9 +2623,18 @@ class BookVibe {
     }
     
     reset() {
-        this.cardsData = [];
-        this.currentIndex = 0;
-        this.isSwitching = false;
+        // 清理所有结果
+        this.clearPreviousResults();
+        
+        // 重置模式为作品模式
+        this.currentMode = 'book';
+        if (this.modeBookBtn && this.modePlaceBtn) {
+            this.modeBookBtn.classList.add('active');
+            this.modePlaceBtn.classList.remove('active');
+            if (this.bookInput) {
+                this.bookInput.placeholder = '输入书名，如《挪威的森林》';
+            }
+        }
         this.showInput();
     }
     
@@ -2406,6 +2873,224 @@ class BookVibe {
         if (debugContent && toggleBtn) {
             debugContent.classList.toggle('hidden');
             toggleBtn.classList.toggle('expanded');
+        }
+    }
+    
+    /**
+     * 渲染作品分栏（地点模式）
+     */
+    renderWorksGrid(cardData) {
+        const worksGrid = document.getElementById('works-grid');
+        if (!worksGrid || !cardData.works || !Array.isArray(cardData.works)) return;
+        
+        worksGrid.innerHTML = '';
+        
+        cardData.works.forEach((work, index) => {
+            const workItem = document.createElement('div');
+            workItem.className = 'work-item';
+            workItem.dataset.type = work.type || 'novel';
+            workItem.dataset.style = work.quoteStyle || 'literary';
+            
+            workItem.innerHTML = `
+                <div class="work-title">${work.title || '未知作品'}</div>
+                <div class="work-author">${work.author || '未知作者'}</div>
+                <div class="work-quote">${work.quote || ''}</div>
+                <button class="copy-quote-btn" data-quote="${(work.quote || '').replace(/"/g, '&quot;')}">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    复制
+                </button>
+            `;
+            
+            // 添加复制功能
+            const copyBtn = workItem.querySelector('.copy-quote-btn');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.copyQuote(work.quote);
+                });
+            }
+            
+            worksGrid.appendChild(workItem);
+        });
+    }
+    
+    /**
+     * 更新地点模式信息（小知识、小贴士）
+     */
+    updatePlaceModeInfo(cardData) {
+        const knowledgeContent = document.getElementById('knowledge-content');
+        const tipsContent = document.getElementById('tips-content');
+        
+        if (knowledgeContent) {
+            knowledgeContent.textContent = cardData.knowledge || '';
+            knowledgeContent.classList.remove('expanded');
+        }
+        
+        if (tipsContent) {
+            tipsContent.textContent = cardData.tips || '';
+            tipsContent.classList.remove('expanded');
+        }
+    }
+    
+    /**
+     * 更新打卡按钮状态
+     */
+    updateCheckinButton(cardData) {
+        if (!this.checkinBtn) return;
+        
+        const location = cardData.location;
+        const checkinStatus = this.checkinStatus[location] || { checked: false, note: '' };
+        const checkinText = this.checkinBtn.querySelector('#checkin-text');
+        
+        if (checkinText) {
+            checkinText.textContent = checkinStatus.checked ? '已打卡' : '标记打卡';
+        }
+        
+        // 更新按钮样式
+        if (checkinStatus.checked) {
+            this.checkinBtn.classList.add('checked');
+        } else {
+            this.checkinBtn.classList.remove('checked');
+        }
+    }
+    
+    /**
+     * 处理筛选
+     */
+    handleFilter(filterType) {
+        // 更新按钮状态
+        const filterBtns = this.filterButtons.querySelectorAll('.filter-btn');
+        filterBtns.forEach(btn => {
+            if (btn.dataset.filter === filterType) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+        
+        // 筛选作品
+        const workItems = document.querySelectorAll('.work-item');
+        workItems.forEach(item => {
+            if (filterType === 'all') {
+                item.style.display = '';
+            } else {
+                const itemType = item.dataset.type;
+                if (filterType === 'poetry' && itemType === 'poetry') {
+                    item.style.display = '';
+                } else if (filterType === 'prose' && itemType === 'prose') {
+                    item.style.display = '';
+                } else if (filterType === 'novel' && itemType === 'novel') {
+                    item.style.display = '';
+                } else if (filterType === 'movie' && itemType === 'movie') {
+                    item.style.display = '';
+                } else {
+                    item.style.display = 'none';
+                }
+            }
+        });
+    }
+    
+    /**
+     * 切换可折叠内容
+     */
+    toggleExpand(type) {
+        const content = document.getElementById(`${type}-content`);
+        if (content) {
+            content.classList.toggle('expanded');
+        }
+    }
+    
+    /**
+     * 切换打卡状态
+     */
+    toggleCheckin() {
+        const cardData = this.cardsData[this.currentIndex];
+        if (!cardData) return;
+        
+        const location = cardData.location;
+        if (!this.checkinStatus[location]) {
+            this.checkinStatus[location] = { checked: false, note: '' };
+        }
+        
+        this.checkinStatus[location].checked = !this.checkinStatus[location].checked;
+        this.updateCheckinButton(cardData);
+        
+        // 保存到localStorage
+        try {
+            localStorage.setItem('bookvibe_checkin', JSON.stringify(this.checkinStatus));
+        } catch (e) {
+            console.warn('无法保存打卡状态:', e);
+        }
+    }
+    
+    /**
+     * 显示笔记对话框
+     */
+    showNoteDialog() {
+        const cardData = this.cardsData[this.currentIndex];
+        if (!cardData) return;
+        
+        const location = cardData.location;
+        const checkinStatus = this.checkinStatus[location] || { checked: false, note: '' };
+        
+        const note = prompt('添加旅行笔记（一句话记录你的感受）:', checkinStatus.note || '');
+        if (note !== null) {
+            if (!this.checkinStatus[location]) {
+                this.checkinStatus[location] = { checked: false, note: '' };
+            }
+            this.checkinStatus[location].note = note;
+            
+            // 保存到localStorage
+            try {
+                localStorage.setItem('bookvibe_checkin', JSON.stringify(this.checkinStatus));
+            } catch (e) {
+                console.warn('无法保存笔记:', e);
+            }
+        }
+    }
+    
+    /**
+     * 复制quote到剪贴板
+     */
+    async copyQuote(quote) {
+        if (!quote) return;
+        
+        try {
+            await navigator.clipboard.writeText(quote);
+            // 显示提示（可以添加toast提示）
+            console.log('已复制到剪贴板:', quote);
+        } catch (e) {
+            // 降级方案
+            const textArea = document.createElement('textarea');
+            textArea.value = quote;
+            textArea.style.position = 'fixed';
+            textArea.style.opacity = '0';
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                console.log('已复制到剪贴板:', quote);
+            } catch (err) {
+                console.error('复制失败:', err);
+            }
+            document.body.removeChild(textArea);
+        }
+    }
+    
+    /**
+     * 初始化：从localStorage加载打卡状态
+     */
+    loadCheckinStatus() {
+        try {
+            const saved = localStorage.getItem('bookvibe_checkin');
+            if (saved) {
+                this.checkinStatus = JSON.parse(saved);
+            }
+        } catch (e) {
+            console.warn('无法加载打卡状态:', e);
         }
     }
 }
