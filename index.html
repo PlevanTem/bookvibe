@@ -2,7 +2,9 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <title>BookVibe - 用一张卡片，连接文字与远方</title>
     <meta name="description" content="输入书名，生成一张文学明信片，连接文字与远方">
     
@@ -26,6 +28,20 @@
             font-family: var(--serif-body);
             background: #fcfaf5;
             color: #0C0A09;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            /* 移动端优化 */
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
+        
+        /* 移动端防止文本选择（按钮等） */
+        button, .action-btn, .nav-arrow, .mode-btn, .filter-btn {
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
         
         /* 呼吸动画 - 用于 Loading */
@@ -142,6 +158,18 @@
             transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         }
         
+        @media (max-width: 768px) {
+            .main-card {
+                max-height: calc(100vh - 200px);
+            }
+        }
+        
+        @media (max-width: 640px) {
+            .main-card {
+                max-height: calc(100vh - 180px);
+            }
+        }
+        
         .main-card.switching {
             transform: scale(0.95);
             opacity: 0.7;
@@ -170,6 +198,18 @@
             background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.7) 50%, transparent 100%);
             padding: 48px;
             color: white;
+            overflow-y: auto;
+            max-height: 100%;
+            /* 移动端滚动优化 */
+            -webkit-overflow-scrolling: touch;
+        }
+        
+        @media (max-width: 768px) {
+            .main-card-content {
+                /* 确保内容可以滚动 */
+                overflow-y: auto;
+                max-height: 70%;
+            }
         }
         
         .location-badge {
@@ -248,6 +288,12 @@
             border: none;
             cursor: pointer;
             text-decoration: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
+        
+        .action-btn:active {
+            transform: scale(0.98);
         }
         
         .action-btn-primary {
@@ -291,11 +337,18 @@
             cursor: pointer;
             transition: all 0.3s ease;
             z-index: 10;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
         }
         
         .nav-arrow:hover {
             background: rgba(255, 255, 255, 0.3);
             transform: translateY(-50%) scale(1.1);
+        }
+        
+        .nav-arrow:active {
+            transform: translateY(-50%) scale(0.95);
+            background: rgba(255, 255, 255, 0.4);
         }
         
         .nav-arrow-left {
@@ -321,6 +374,13 @@
             padding: 0 24px;
             display: flex;
             justify-content: center;
+            -webkit-overflow-scrolling: touch; /* iOS 平滑滚动 */
+        }
+        
+        @media (max-width: 640px) {
+            .filmstrip-wrapper {
+                padding: 0 12px;
+            }
         }
         
         .filmstrip-wrapper::-webkit-scrollbar {
@@ -354,11 +414,23 @@
             position: relative;
             transition: all 0.3s ease;
             border: 3px solid transparent;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
         }
         
         .filmstrip-item:hover {
             transform: translateY(-4px);
             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+        }
+        
+        .filmstrip-item:active {
+            transform: scale(0.95);
+        }
+        
+        @media (hover: none) {
+            .filmstrip-item:hover {
+                transform: none;
+            }
         }
         
         .filmstrip-item.active {
@@ -427,37 +499,141 @@
             color: #A8A29E;
         }
         
-        /* 响应式 */
+        /* 响应式 - 平板和移动端 */
         @media (max-width: 768px) {
+            .main-card-container {
+                max-width: 100%;
+                padding: 0 8px;
+            }
+            
+            .main-card {
+                aspect-ratio: 4 / 3;
+                border-radius: 16px;
+            }
+            
             .main-card-content {
-                padding: 32px 24px;
+                padding: 24px 20px;
             }
             
             .location-title {
-                font-size: 32px;
+                font-size: 28px;
+                margin: 12px 0 16px 0;
             }
             
             .quote-text-main {
-                font-size: 18px;
+                font-size: 16px;
+                line-height: 1.6;
+                margin-bottom: 8px;
+            }
+            
+            .quote-source {
+                font-size: 14px;
+            }
+            
+            .location-badge,
+            .location-type-badge {
+                font-size: 12px;
+                padding: 4px 12px;
             }
             
             .nav-arrow {
-                width: 48px;
-                height: 48px;
+                width: 40px;
+                height: 40px;
+            }
+            
+            .nav-arrow svg {
+                width: 20px;
+                height: 20px;
             }
             
             .nav-arrow-left {
-                left: 12px;
+                left: 8px;
             }
             
             .nav-arrow-right {
-                right: 12px;
+                right: 8px;
+            }
+            
+            .card-actions {
+                flex-direction: column;
+                gap: 8px;
+                margin-top: 16px;
+            }
+            
+            .action-btn {
+                width: 100%;
+                justify-content: center;
+                padding: 10px 20px;
+                font-size: 14px;
             }
             
             .bottom-bar {
                 flex-direction: column;
                 gap: 12px;
                 padding: 16px;
+                text-align: center;
+            }
+            
+            .card-counter {
+                font-size: 16px;
+            }
+            
+            .keyboard-hint {
+                font-size: 12px;
+            }
+            
+            .works-grid {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+            
+            .work-item {
+                padding: 16px;
+            }
+            
+            .work-title {
+                font-size: 18px;
+            }
+            
+            .work-quote {
+                font-size: 14px;
+            }
+            
+            .filter-buttons {
+                gap: 6px;
+                margin-top: 12px;
+            }
+            
+            .filter-btn {
+                padding: 5px 12px;
+                font-size: 11px;
+            }
+            
+            .expandable-header {
+                font-size: 13px;
+            }
+            
+            .expandable-content {
+                font-size: 13px;
+            }
+            
+            .debug-toggle-btn {
+                font-size: 12px;
+                padding: 6px 12px;
+            }
+            
+            .debug-content {
+                padding: 10px;
+            }
+            
+            .debug-item {
+                font-size: 12px;
+                flex-direction: column;
+                gap: 4px;
+            }
+            
+            .debug-label {
+                min-width: auto;
             }
         }
         
@@ -591,19 +767,33 @@
             margin-top: 16px;
         }
         
-        /* 响应式 */
+        /* 响应式 - 小屏移动端 */
         @media (max-width: 640px) {
-            .postcard {
-                height: 500px;
+            body {
+                padding: 8px;
+            }
+            
+            /* 输入界面 */
+            #input-screen {
+                padding: 0 16px;
+            }
+            
+            #input-screen h2 {
+                font-size: 1.75rem;
+                line-height: 1.4;
+            }
+            
+            #input-screen p {
+                font-size: 12px;
             }
             
             .input-field {
-                font-size: 18px;
-                padding: 14px 32px 14px 0;
+                font-size: 16px;
+                padding: 12px 36px 12px 0;
             }
             
             #submit-btn {
-                bottom: 14px;
+                bottom: 12px;
             }
             
             #submit-btn svg {
@@ -611,8 +801,209 @@
                 height: 20px;
             }
             
+            .mode-btn {
+                padding: 6px 16px;
+                font-size: 13px;
+            }
+            
+            /* 主卡片 */
+            .main-card {
+                aspect-ratio: 3 / 4;
+                border-radius: 12px;
+            }
+            
+            .main-card-content {
+                padding: 20px 16px;
+            }
+            
+            .location-title {
+                font-size: 24px;
+                margin: 10px 0 12px 0;
+            }
+            
+            .quote-text-main {
+                font-size: 15px;
+                line-height: 1.5;
+            }
+            
+            .quote-source {
+                font-size: 13px;
+            }
+            
+            .location-badge,
+            .location-type-badge {
+                font-size: 11px;
+                padding: 3px 10px;
+            }
+            
+            /* 导航箭头 */
+            .nav-arrow {
+                width: 36px;
+                height: 36px;
+            }
+            
+            .nav-arrow svg {
+                width: 18px;
+                height: 18px;
+            }
+            
+            .nav-arrow-left {
+                left: 4px;
+            }
+            
+            .nav-arrow-right {
+                right: 4px;
+            }
+            
+            /* 胶卷带 */
+            .filmstrip-container {
+                padding: 16px 0;
+            }
+            
+            .filmstrip-wrapper {
+                padding: 0 12px;
+            }
+            
+            .filmstrip {
+                gap: 12px;
+                padding: 12px 0;
+            }
+            
+            .filmstrip-item {
+                width: 100px;
+                height: 66px;
+            }
+            
+            /* 底部操作栏 */
+            .bottom-bar {
+                padding: 12px;
+            }
+            
+            .btn-secondary {
+                padding: 10px 20px;
+                font-size: 14px;
+                width: 100%;
+            }
+            
+            .card-counter {
+                font-size: 14px;
+            }
+            
+            .keyboard-hint {
+                font-size: 11px;
+            }
+            
+            /* 顶部标题 */
+            header {
+                top: 4px;
+            }
+            
+            header h1 {
+                font-size: 14px;
+            }
+            
+            /* 设置按钮 */
+            .settings-btn {
+                top: 12px;
+                right: 12px;
+                width: 36px;
+                height: 36px;
+            }
+            
+            .settings-btn svg {
+                width: 18px;
+                height: 18px;
+            }
+            
+            /* 加载界面 */
+            .loading-text {
+                font-size: 16px;
+            }
+            
+            /* 错误消息 */
+            .error-message {
+                font-size: 14px;
+            }
+        }
+        
+        /* 响应式 - 超小屏移动端 */
+        @media (max-width: 480px) {
+            .main-card {
+                aspect-ratio: 2 / 3;
+            }
+            
+            .main-card-content {
+                padding: 16px 12px;
+            }
+            
+            .location-title {
+                font-size: 20px;
+                margin: 8px 0 10px 0;
+            }
+            
+            .quote-text-main {
+                font-size: 14px;
+            }
+            
+            .quote-source {
+                font-size: 12px;
+            }
+            
+            .action-btn {
+                padding: 8px 16px;
+                font-size: 13px;
+            }
+            
+            .action-btn svg {
+                width: 16px;
+                height: 16px;
+            }
+            
+            .filmstrip-item {
+                width: 80px;
+                height: 53px;
+            }
+            
             #input-screen h2 {
-                font-size: 1.875rem;
+                font-size: 1.5rem;
+            }
+            
+            .input-field {
+                font-size: 15px;
+            }
+            
+            /* 确保在小屏幕上内容不会溢出 */
+            .main-card-content * {
+                word-wrap: break-word;
+                overflow-wrap: break-word;
+            }
+        }
+        
+        /* 横屏模式优化 */
+        @media (max-width: 768px) and (orientation: landscape) {
+            .main-card {
+                aspect-ratio: 16 / 9;
+                max-height: calc(100vh - 150px);
+            }
+            
+            .main-card-content {
+                padding: 16px 20px;
+            }
+            
+            .location-title {
+                font-size: 24px;
+            }
+            
+            .quote-text-main {
+                font-size: 15px;
+            }
+        }
+        
+        /* 高分辨率屏幕优化 */
+        @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+            .main-card-image {
+                image-rendering: -webkit-optimize-contrast;
+                image-rendering: crisp-edges;
             }
         }
         
@@ -1249,6 +1640,63 @@
             color: #1C1917;
         }
         
+        /* 配置弹窗响应式 */
+        @media (max-width: 768px) {
+            .config-modal-content {
+                width: 95%;
+                max-height: 95vh;
+                border-radius: 12px;
+            }
+            
+            .config-modal-header {
+                padding: 20px;
+            }
+            
+            .config-modal-title {
+                font-size: 20px;
+            }
+            
+            .config-modal-body {
+                padding: 20px;
+            }
+            
+            .config-section {
+                margin-bottom: 24px;
+            }
+            
+            .config-section-title {
+                font-size: 18px;
+            }
+            
+            .config-section-desc {
+                font-size: 13px;
+            }
+            
+            .config-item {
+                margin-bottom: 20px;
+            }
+            
+            .config-label {
+                font-size: 13px;
+            }
+            
+            .config-input,
+            .config-select {
+                padding: 10px 14px;
+                font-size: 14px;
+            }
+            
+            .config-modal-footer {
+                padding: 20px;
+                flex-direction: column;
+            }
+            
+            .config-save-btn,
+            .config-reset-btn {
+                width: 100%;
+            }
+        }
+        
         @media (max-width: 640px) {
             .config-modal-content {
                 width: 100%;
@@ -1256,11 +1704,33 @@
                 border-radius: 0;
             }
             
-            .settings-btn {
-                top: 16px;
-                right: 16px;
-                width: 40px;
-                height: 40px;
+            .config-modal-header {
+                padding: 16px;
+            }
+            
+            .config-modal-title {
+                font-size: 18px;
+            }
+            
+            .config-modal-body {
+                padding: 16px;
+            }
+            
+            .config-section-title {
+                font-size: 16px;
+            }
+            
+            .config-section-desc {
+                font-size: 12px;
+            }
+            
+            .config-links {
+                flex-direction: column;
+                gap: 8px;
+            }
+            
+            .config-link {
+                font-size: 11px;
             }
         }
     </style>
@@ -1269,7 +1739,7 @@
     
     <!-- 顶部标题 -->
     <header class="absolute top-8 left-0 w-full text-center z-10 pointer-events-none">
-        <h1 class="text-xl tracking-widest opacity-40" style="font-family: var(--serif-heading); color: #78716C; letter-spacing: 0.1em;">
+        <h1 class="text-xl md:text-2xl tracking-widest opacity-40" style="font-family: var(--serif-heading); color: #78716C; letter-spacing: 0.1em;">
             书旅
         </h1>
     </header>
@@ -1370,18 +1840,18 @@
     </div>
     
     <!-- 首页：输入界面 -->
-    <div id="input-screen" class="w-full max-w-md px-8 flex flex-col items-center text-center">
-        <div class="mb-12">
-            <p class="text-sm mb-4" style="font-family: var(--serif-body); color: #78716C; letter-spacing: 0.2em;">
+    <div id="input-screen" class="w-full max-w-md px-4 md:px-8 flex flex-col items-center text-center">
+        <div class="mb-8 md:mb-12">
+            <p class="text-xs md:text-sm mb-3 md:mb-4" style="font-family: var(--serif-body); color: #78716C; letter-spacing: 0.2em;">
                文字是通往远方的门票
             </p>
-            <h2 class="text-3xl md:text-4xl leading-relaxed" style="font-family: var(--serif-heading); color: #1C1917;">
+            <h2 class="text-2xl md:text-3xl lg:text-4xl leading-relaxed" style="font-family: var(--serif-heading); color: #1C1917;">
                你想去哪本书里<br>流浪？
             </h2>
         </div>
         
         <!-- 模式切换 -->
-        <div class="w-full mb-6 flex gap-2 justify-center">
+        <div class="w-full mb-4 md:mb-6 flex gap-2 justify-center">
             <button id="mode-book" class="mode-btn active" data-mode="book">
                 <span>作品模式</span>
             </button>
@@ -1397,6 +1867,8 @@
                 class="input-field" 
                 placeholder="输入书名，如《挪威的森林》"
                 autocomplete="off"
+                inputmode="text"
+                enterkeyhint="search"
             >
             <button id="submit-btn" class="text-gray-400 hover:text-gray-900 transition-colors">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
@@ -1423,7 +1895,7 @@
     <!-- 结果界面：沉浸式大卡片 + 胶卷带 -->
     <div id="result-screen" class="hidden w-full min-h-screen flex flex-col">
         <!-- 主卡片区域 -->
-        <div class="flex-1 flex items-center justify-center px-4 py-8 relative">
+        <div class="flex-1 flex items-center justify-center px-2 md:px-4 py-4 md:py-8 relative">
             <!-- 左箭头 -->
             <button id="prev-btn" class="nav-arrow nav-arrow-left hidden">
                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
